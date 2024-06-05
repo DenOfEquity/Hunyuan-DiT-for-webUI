@@ -24,7 +24,9 @@ diffusers>=0.28.1
 * reduced VRAM, no longer flirting with shared memory
 * caching of prompt embeds to avoid text encoder processing if prompt and negative not changed
 * img2img, same method as used with PixArt
+  
 image2image progression with a nice denoise
+
 ![](i2i.png "image2image sequence")
 
 ---
