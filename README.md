@@ -24,9 +24,10 @@ diffusers>=0.28.1
 
 Generating with 8GB VRAM is just about possible, but starts using shared memory easily. Therefore: *slow*. Using CFG 1 keeps generation within 8GB VRAM. Using small resolutions (768x768) seems to give very poor results, stay around 1024x1024. Resolution binning is NOT enabled (width/height would be automatically adjusted to supported values) as this seems to cause issues along edges.
 
-I might keep working on this, but probably not. I've tested the usual ways to reduce VRAM usage, to no avail. Also, the results I'm getting are **variable**.
+I might keep working on this, but probably not. I've tested the usual ways to reduce VRAM usage, to no avail. Also, the results I'm getting are *variable*.
 
 The pipeline has a 'latents' parameter, so img2img should be easy to add.
+
 ---
 
 ### example ###
