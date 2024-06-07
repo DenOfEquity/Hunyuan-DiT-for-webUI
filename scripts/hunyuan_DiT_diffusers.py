@@ -374,7 +374,7 @@ def on_ui_tabs():
 
                 with gr.Row():
                     guidance_scale = gr.Slider(label='CFG', minimum=1, maximum=16, step=0.5, value=1, scale=2)
-                    guidance_rescale = gr.Slider(label='rescale CFG', minimum=0, maximum=16, step=1, value=0, scale=2)
+                    guidance_rescale = gr.Slider(label='rescale CFG', minimum=0.00, maximum=1.00, step=0.01, value=0, scale=2)
                 with gr.Row():
                     steps = gr.Slider(label='Steps', minimum=1, maximum=80, step=1, value=20, scale=2)
                     sampling_seed = gr.Number(label='Seed', value=-1, precision=0, scale=1)
