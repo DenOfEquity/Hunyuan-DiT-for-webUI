@@ -33,6 +33,10 @@ diffusers>=0.28.1
 * caching of prompt embeds to avoid text encoder processing if prompt and negative not changed
 * img2img, same method as used with PixArt
 
+#### 04/06/2024 ####
+Initial release, dips into shared memory too easily.
+
+---
 image2image progression with a nice denoise
 
 ![](i2i.png "image2image sequence")
