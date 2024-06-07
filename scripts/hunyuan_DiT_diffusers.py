@@ -3,7 +3,7 @@ import torch
 import gc
 import json
 import numpy as np
-#
+
 from modules import script_callbacks, images, shared
 from modules.processing import get_fixed_seed
 from modules.rng import create_generator
@@ -39,14 +39,11 @@ from transformers import BertModel, BertTokenizer, CLIPImageProcessor, MT5Tokeni
 from diffusers import HunyuanDiTPipeline
 from diffusers import AutoencoderKL
 
-
 from diffusers import DEISMultistepScheduler, DPMSolverSinglestepScheduler, DPMSolverMultistepScheduler, DPMSolverSDEScheduler
 from diffusers import EulerAncestralDiscreteScheduler, EulerDiscreteScheduler, UniPCMultistepScheduler, DDPMScheduler
 from diffusers import SASolverScheduler
-#from peft import PeftModel, PeftConfig
 
 from diffusers.utils.torch_utils import randn_tensor
-
 
 import argparse
 import pathlib
@@ -55,7 +52,6 @@ import sys
 
 current_file_path = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(current_file_path))
-
 
 
 # modules/infotext_utils.py
@@ -85,14 +81,17 @@ def create_infotext(positive_prompt, negative_prompt, guidance_scale, guidance_r
 
     return f"Model: Hunyuan-DiT\n{prompt_text}{generation_params_text}"
 
-def predict(positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale, num_steps, sampling_seed, num_images, scheduler, style, i2iSource, i2iDenoise, *args):
+def predict(positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale,
+            num_steps, sampling_seed, num_images, scheduler, style, i2iSource, i2iDenoise, *args):
 
     if style != 0:
         positive_prompt = styles.styles_list[style][1].replace("{prompt}", positive_prompt)
         negative_prompt = styles.styles_list[style][2] + negative_prompt
 
-#    from diffusers.utils import logging
- #   logging.set_verbosity(logging.WARN)       #   download information is useful
+    if i2iSource == None:
+        i2iDenoise = 1
+    if i2iDenoise < (num_steps + 1) / 1000:
+        i2iDenoise = (num_steps + 1) / 1000
 
     gc.collect()
     torch.cuda.empty_cache()
@@ -106,8 +105,6 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 
     useCachedEmbeds = (HunyuanStorage.lastPrompt == positive_prompt and HunyuanStorage.lastNegative == negative_prompt)
 
-#    logging.set_verbosity(logging.ERROR)
-
     if useCachedEmbeds:
         print ("Skipping text encoders and tokenizers.")
         pipe = HunyuanDiTPipeline.from_pretrained(
@@ -115,13 +112,13 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
             requires_safety_checker=False,
             safety_checker=None,
             feature_extractor=None,
-            device='cuda',
             torch_dtype=torch.float16,
             tokenizer=None,
             text_encoder=None,
             tokenizer_2=None,
             text_encoder_2=None
             )
+        pipe.to('cuda')
         pipe.enable_model_cpu_offload()
         prompt_embeds = HunyuanStorage.prompt_embeds.to('cuda')
         negative_prompt_embeds = HunyuanStorage.negative_prompt_embeds.to('cuda')
@@ -138,9 +135,9 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
             requires_safety_checker=False,
             safety_checker=None,
             feature_extractor=None,
-            device='cuda',
             torch_dtype=torch.float16,
             )
+        pipe.to('cuda')
         pipe.enable_model_cpu_offload()
         with torch.no_grad():
             (
@@ -244,7 +241,7 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
         pipe.scheduler = SASolverScheduler.from_config(pipe.scheduler.config, algorithm_type='data_prediction')
     elif scheduler == 'UniPC':
         pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
-#   else uses default set by model
+#   else uses default set by model (DDPM)
 
     pipe.scheduler.config.num_train_timesteps = int(1000 * i2iDenoise)
     pipe.scheduler.config.use_karras_sigmas = HunyuanStorage.karras
@@ -253,13 +250,13 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 ##    pipe.scheduler.use_lu_lambdas = use_lu_lambdas
 
     output = pipe(
-        prompt=None,#positive_prompt,
-        negative_prompt=None,#negative_prompt, 
+        prompt=None,
+        negative_prompt=None, 
         num_inference_steps=num_steps,
         height=height,
         width=width,
         guidance_scale=guidance_scale,
-#        guidance_rescale=guidance_rescale,
+        guidance_rescale=guidance_rescale,
         prompt_embeds=prompt_embeds,
         negative_prompt_embeds=negative_prompt_embeds,
         prompt_attention_mask=prompt_attention_mask,
@@ -276,6 +273,9 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
     ).images
 
     del pipe, generator, i2i_latents
+    del prompt_embeds, negative_prompt_embeds, prompt_attention_mask, negative_prompt_attention_mask
+    del prompt_embeds_2, negative_prompt_embeds_2, prompt_attention_mask_2, negative_prompt_attention_mask_2
+
     gc.collect()
     torch.cuda.empty_cache()
 
