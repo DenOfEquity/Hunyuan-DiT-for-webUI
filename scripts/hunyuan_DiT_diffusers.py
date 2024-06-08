@@ -33,11 +33,12 @@ class HunyuanStorage:
     prompt_attention_mask_2 = None
     negative_prompt_attention_mask_2 = None
     karras = False
+    useDistilled = False
 
 from transformers import BertModel, BertTokenizer, CLIPImageProcessor, MT5Tokenizer, T5EncoderModel
 
 from diffusers import HunyuanDiTPipeline
-from diffusers import AutoencoderKL
+from diffusers import AutoencoderKL, HunyuanDiT2DModel
 
 from diffusers import DEISMultistepScheduler, DPMSolverSinglestepScheduler, DPMSolverMultistepScheduler, DPMSolverSDEScheduler
 from diffusers import EulerAncestralDiscreteScheduler, EulerDiscreteScheduler, UniPCMultistepScheduler, DDPMScheduler
@@ -64,6 +65,7 @@ def quote(text):
 # modules/processing.py
 def create_infotext(positive_prompt, negative_prompt, guidance_scale, guidance_rescale, steps, seed, scheduler, width, height):
     karras = " : Karras" if HunyuanStorage.karras == True else ""
+    distilled = " : distilled" if HunyuanStorage.useDistilled == True else ""
     generation_params = {
         "Size": f"{width}x{height}",
         "Seed": seed,
@@ -79,7 +81,7 @@ def create_infotext(positive_prompt, negative_prompt, guidance_scale, guidance_r
         prompt_text += (f"Negative: {negative_prompt}\n")
     generation_params_text = ", ".join([k if k == v else f'{k}: {quote(v)}' for k, v in generation_params.items() if v is not None])
 
-    return f"Model: Hunyuan-DiT\n{prompt_text}{generation_params_text}"
+    return f"Model: Hunyuan-DiT{distilled}\n{prompt_text}{generation_params_text}"
 
 def predict(positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale,
             num_steps, sampling_seed, num_images, scheduler, style, i2iSource, i2iDenoise, *args):
@@ -103,12 +105,21 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 #    beta_schedule = args.beta_schedule
 #    use_lu_lambdas = args.use_lu_lambdas
 
-    useCachedEmbeds = (HunyuanStorage.lastPrompt == positive_prompt and HunyuanStorage.lastNegative == negative_prompt)
+    source = "Tencent-Hunyuan/HunyuanDiT-Diffusers-Distilled" if HunyuanStorage.useDistilled else "Tencent-Hunyuan/HunyuanDiT-Diffusers"
+    transformer = HunyuanDiT2DModel.from_pretrained(
+        source,
+        local_files_only=False, cache_dir=".//models//diffusers//",
+        subfolder='transformer',
+        torch_dtype=torch.float16,
+        )
 
+    useCachedEmbeds = (HunyuanStorage.lastPrompt == positive_prompt and HunyuanStorage.lastNegative == negative_prompt)
     if useCachedEmbeds:
         print ("Skipping text encoders and tokenizers.")
         pipe = HunyuanDiTPipeline.from_pretrained(
             "Tencent-Hunyuan/HunyuanDiT-Diffusers",
+            local_files_only=False, cache_dir=".//models//diffusers//",
+            transformer=transformer,
             requires_safety_checker=False,
             safety_checker=None,
             feature_extractor=None,
@@ -116,8 +127,9 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
             tokenizer=None,
             text_encoder=None,
             tokenizer_2=None,
-            text_encoder_2=None
+            text_encoder_2=None,
             )
+        del transformer
         pipe.to('cuda')
         pipe.enable_model_cpu_offload()
         prompt_embeds = HunyuanStorage.prompt_embeds.to('cuda')
@@ -132,11 +144,14 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
     else:
         pipe = HunyuanDiTPipeline.from_pretrained(
             "Tencent-Hunyuan/HunyuanDiT-Diffusers",
+            local_files_only=False, cache_dir=".//models//diffusers//",
+            transformer=transformer,
             requires_safety_checker=False,
             safety_checker=None,
             feature_extractor=None,
             torch_dtype=torch.float16,
             )
+        del transformer
         pipe.to('cuda')
         pipe.enable_model_cpu_offload()
         with torch.no_grad():
@@ -339,6 +354,13 @@ def on_ui_tabs():
         else:
             HunyuanStorage.karras = False
             return gr.Button.update(value='\U0001D542', variant='secondary')
+    def toggleDistilled ():
+        if HunyuanStorage.useDistilled == False:
+            HunyuanStorage.useDistilled = True
+            return gr.Button.update(value='\U0001D403', variant='primary')
+        else:
+            HunyuanStorage.useDistilled = False
+            return gr.Button.update(value='\U0001D53B', variant='secondary')
 
 
     def toggleGenerate ():
@@ -362,6 +384,7 @@ def on_ui_tabs():
                                              ],
                         label='Sampler', value="SA-solver", type='value', scale=0)
                     karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas")
+                    distilled = ToolButton(value="\U0001D53B", variant='secondary', tooltip="use distilled model")
 
 
                 with gr.Row():
@@ -374,7 +397,7 @@ def on_ui_tabs():
 
                 with gr.Row():
                     guidance_scale = gr.Slider(label='CFG', minimum=1, maximum=16, step=0.5, value=1, scale=2)
-                    guidance_rescale = gr.Slider(label='rescale CFG', minimum=0.00, maximum=1.00, step=0.01, value=0, scale=2)
+                    guidance_rescale = gr.Slider(label='rescale CFG', minimum=0, maximum=1, step=0.01, value=0, scale=2)
                 with gr.Row():
                     steps = gr.Slider(label='Steps', minimum=1, maximum=80, step=1, value=20, scale=2)
                     sampling_seed = gr.Number(label='Seed', value=-1, precision=0, scale=1)
@@ -412,6 +435,7 @@ def on_ui_tabs():
 
 
         karras.click(toggleKarras, inputs=[], outputs=karras)
+        distilled.click(toggleDistilled, inputs=[], outputs=distilled)
         swapper.click(fn=None, _js="function(){switchWidthHeight('Hunyuan-DiT')}", inputs=None, outputs=None, show_progress=False)
         random.click(randomSeed, inputs=[], outputs=sampling_seed, show_progress=False)
         reuseSeed.click(reuseLastSeed, inputs=[], outputs=sampling_seed, show_progress=False)
