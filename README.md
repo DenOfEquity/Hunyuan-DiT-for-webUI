@@ -51,6 +51,7 @@ Of course, always same prompt, seed, sampler. Non-distilled version.
 From left to right:
 * cfg: 2, 4, 8, 8
 * steps: 20, 20, 20, 40
+  
 Top row: 0 rescale; bottom row: 0.75 rescale
 
 ![](rescale.png "rescale CFG sequence")
