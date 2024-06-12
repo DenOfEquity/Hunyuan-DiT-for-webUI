@@ -18,20 +18,20 @@ torch.backends.cuda.enable_flash_sdp(True)
 #torch.backends.cuda.enable_mem_efficient_sdp(True)
 
 
-import customStylesList as styles
+import customStylesListHY as styles
 
 class HunyuanStorage:
     lastSeed = -1
     lastPrompt = None
     lastNegative = None
-    prompt_embeds = None
-    negative_prompt_embeds = None
-    prompt_attention_mask = None
-    negative_prompt_attention_mask = None
+    positive_embeds_1 = None
+    negative_embeds_1 = None
+    prompt_attention_1 = None
+    negative_attention_1 = None
     prompt_embeds_2 = None
-    negative_prompt_embeds_2 = None
-    prompt_attention_mask_2 = None
-    negative_prompt_attention_mask_2 = None
+    negative_embeds_2 = None
+    prompt_attention_2 = None
+    negative_attention_2 = None
     karras = False
     useDistilled = False
 
@@ -105,106 +105,180 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 #    beta_schedule = args.beta_schedule
 #    use_lu_lambdas = args.use_lu_lambdas
 
+    #first: tokenize and text_encode
+    useCachedEmbeds = (HunyuanStorage.lastPrompt == positive_prompt and HunyuanStorage.lastNegative == negative_prompt)
+    if useCachedEmbeds:
+        print ("Skipping text encoders and tokenizers.")
+        #   nothing to do
+    else:
+        with torch.no_grad():
+            #   tokenize 1
+            tokenizer = BertTokenizer.from_pretrained(
+                "Tencent-Hunyuan/HunyuanDiT-Diffusers",
+                local_files_only=False, cache_dir=".//models//diffusers//",
+                subfolder='tokenizer',
+                torch_dtype=torch.float16,
+                )
+            #   positive
+            text_inputs = tokenizer(
+                positive_prompt,
+                padding="max_length",
+                max_length=77,
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors="pt",
+            )
+            positive_text_input_ids = text_inputs.input_ids.to('cuda')
+            positive_attention_1 = text_inputs.attention_mask.to('cuda')
+            #   negative
+            text_inputs = tokenizer(
+                negative_prompt,
+                padding="max_length",
+                max_length=77,
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors="pt",
+            )
+            negative_text_input_ids = text_inputs.input_ids.to('cuda')
+            negative_attention_1 = text_inputs.attention_mask.to('cuda')
+
+            del tokenizer
+            #end tokenize 1
+
+            #   text encode 1
+            text_encoder = BertModel.from_pretrained(
+                "Tencent-Hunyuan/HunyuanDiT-Diffusers",
+                local_files_only=False, cache_dir=".//models//diffusers//",
+                subfolder='text_encoder',
+                torch_dtype=torch.float16,
+                ).to('cuda')
+
+            prompt_embeds = text_encoder(
+                positive_text_input_ids,
+                attention_mask=positive_attention_1,
+            )
+            positive_embeds_1 = prompt_embeds[0]
+            positive_attention_1 = positive_attention_1.repeat(num_images, 1)
+
+            prompt_embeds = text_encoder(
+                negative_text_input_ids,
+                attention_mask=negative_attention_1,
+            )
+            negative_embeds_1 = prompt_embeds[0]
+            negative_attention_1 = negative_attention_1.repeat(num_images, 1)
+
+            del text_encoder
+            #end text_encode 1
+
+            gc.collect()
+            torch.cuda.empty_cache()
+
+
+            #   tokenize 2
+            tokenizer = MT5Tokenizer.from_pretrained(
+                "Tencent-Hunyuan/HunyuanDiT-Diffusers",
+                local_files_only=False, cache_dir=".//models//diffusers//",
+                subfolder='tokenizer_2',
+                torch_dtype=torch.float16,
+                )
+            #   positive
+            text_inputs = tokenizer(
+                positive_prompt,
+                padding="max_length",
+                max_length=256,
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors="pt",
+            )
+            positive_text_input_ids = text_inputs.input_ids.to('cuda')
+            positive_attention_2 = text_inputs.attention_mask.to('cuda')
+            #   negative
+            text_inputs = tokenizer(
+                negative_prompt,
+                padding="max_length",
+                max_length=256,
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors="pt",
+            )
+            negative_text_input_ids = text_inputs.input_ids.to('cuda')
+            negative_attention_2 = text_inputs.attention_mask.to('cuda')
+
+            del tokenizer
+            #end tokenize 2
+
+            #   text encode 2
+            text_encoder = T5EncoderModel.from_pretrained(
+                "Tencent-Hunyuan/HunyuanDiT-Diffusers",
+                local_files_only=False, cache_dir=".//models//diffusers//",
+                subfolder='text_encoder_2',
+                torch_dtype=torch.float16,
+                device_map='auto'
+                )
+
+            prompt_embeds = text_encoder(
+                positive_text_input_ids,
+                attention_mask=positive_attention_2,
+            )
+            positive_embeds_2 = prompt_embeds[0]
+            positive_attention_2 = positive_attention_2.repeat(num_images, 1)
+
+            prompt_embeds = text_encoder(
+                negative_text_input_ids,
+                attention_mask=negative_attention_2,
+            )
+            negative_embeds_2 = prompt_embeds[0]
+            negative_attention_2 = negative_attention_2.repeat(num_images, 1)
+
+            del text_encoder
+            #end text_encode 2
+
+        HunyuanStorage.positive_embeds_1    = positive_embeds_1.to('cpu')
+        HunyuanStorage.positive_attention_1 = positive_attention_1.to('cpu')
+        HunyuanStorage.negative_embeds_1    = negative_embeds_1.to('cpu')
+        HunyuanStorage.negative_attention_1 = negative_attention_1.to('cpu')
+        HunyuanStorage.positive_embeds_2    = positive_embeds_2.to('cpu')
+        HunyuanStorage.positive_attention_2 = positive_attention_2.to('cpu')
+        HunyuanStorage.negative_embeds_2    = negative_embeds_2.to('cpu')
+        HunyuanStorage.negative_attention_2 = negative_attention_2.to('cpu')
+
+        del positive_embeds_1, negative_embeds_1, positive_attention_1, negative_attention_1
+        del positive_embeds_2, negative_embeds_2, positive_attention_2, negative_attention_2
+
+        HunyuanStorage.lastPrompt = positive_prompt
+        HunyuanStorage.lastNegative = negative_prompt
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    #second: transformer/VAE
     source = "Tencent-Hunyuan/HunyuanDiT-Diffusers-Distilled" if HunyuanStorage.useDistilled else "Tencent-Hunyuan/HunyuanDiT-Diffusers"
+
     transformer = HunyuanDiT2DModel.from_pretrained(
         source,
         local_files_only=False, cache_dir=".//models//diffusers//",
         subfolder='transformer',
         torch_dtype=torch.float16,
         )
-
-    useCachedEmbeds = (HunyuanStorage.lastPrompt == positive_prompt and HunyuanStorage.lastNegative == negative_prompt)
-    if useCachedEmbeds:
-        print ("Skipping text encoders and tokenizers.")
-        pipe = HunyuanDiTPipeline.from_pretrained(
-            "Tencent-Hunyuan/HunyuanDiT-Diffusers",
-            local_files_only=False, cache_dir=".//models//diffusers//",
-            transformer=transformer,
-            requires_safety_checker=False,
-            safety_checker=None,
-            feature_extractor=None,
-            torch_dtype=torch.float16,
-            tokenizer=None,
-            text_encoder=None,
-            tokenizer_2=None,
-            text_encoder_2=None,
-            )
-        del transformer
-        pipe.to('cuda')
-        pipe.enable_model_cpu_offload()
-        prompt_embeds = HunyuanStorage.prompt_embeds.to('cuda')
-        negative_prompt_embeds = HunyuanStorage.negative_prompt_embeds.to('cuda')
-        prompt_attention_mask = HunyuanStorage.prompt_attention_mask.to('cuda')
-        negative_prompt_attention_mask = HunyuanStorage.negative_prompt_attention_mask.to('cuda')
-        prompt_embeds_2 = HunyuanStorage.prompt_embeds_2.to('cuda')
-        negative_prompt_embeds_2 = HunyuanStorage.negative_prompt_embeds_2.to('cuda')
-        prompt_attention_mask_2 = HunyuanStorage.prompt_attention_mask_2.to('cuda')
-        negative_prompt_attention_mask_2 = HunyuanStorage.negative_prompt_attention_mask_2.to('cuda')
+ 
+    pipe = HunyuanDiTPipeline.from_pretrained(
+        "Tencent-Hunyuan/HunyuanDiT-Diffusers",
+        local_files_only=False, cache_dir=".//models//diffusers//",
+        transformer=transformer,
+        requires_safety_checker=False,
+        safety_checker=None,
+        feature_extractor=None,
+        torch_dtype=torch.float16,
+        tokenizer=None,
+        text_encoder=None,
+        tokenizer_2=None,
+        text_encoder_2=None,
+        use_safetensors=True,
+        )
+    pipe.to('cuda')
+    pipe.enable_model_cpu_offload()
        
-    else:
-        pipe = HunyuanDiTPipeline.from_pretrained(
-            "Tencent-Hunyuan/HunyuanDiT-Diffusers",
-            local_files_only=False, cache_dir=".//models//diffusers//",
-            transformer=transformer,
-            requires_safety_checker=False,
-            safety_checker=None,
-            feature_extractor=None,
-            torch_dtype=torch.float16,
-            )
-        del transformer
-        pipe.to('cuda')
-        pipe.enable_model_cpu_offload()
-        with torch.no_grad():
-            (
-                prompt_embeds,
-                negative_prompt_embeds,
-                prompt_attention_mask,
-                negative_prompt_attention_mask,
-            ) = pipe.encode_prompt(
-                prompt=positive_prompt,
-                negative_prompt=negative_prompt,
-                device='cuda',
-                dtype=torch.float16,
-                num_images_per_prompt=num_images,
-                do_classifier_free_guidance=True,
-                max_sequence_length=77,
-                text_encoder_index=0,
-            )
-            (
-                prompt_embeds_2,
-                negative_prompt_embeds_2,
-                prompt_attention_mask_2,
-                negative_prompt_attention_mask_2,
-            ) = pipe.encode_prompt(
-                prompt=positive_prompt,
-                negative_prompt=negative_prompt,
-                device='cuda',
-                dtype=torch.float16,
-                num_images_per_prompt=num_images,
-                do_classifier_free_guidance=True,
-                max_sequence_length=256,
-                text_encoder_index=1,
-            )
-        HunyuanStorage.prompt_embeds = prompt_embeds.to('cpu')
-        HunyuanStorage.negative_prompt_embeds = negative_prompt_embeds.to('cpu')
-        HunyuanStorage.prompt_attention_mask = prompt_attention_mask.to('cpu')
-        HunyuanStorage.negative_prompt_attention_mask = negative_prompt_attention_mask.to('cpu')
-        HunyuanStorage.prompt_embeds_2 = prompt_embeds_2.to('cpu')
-        HunyuanStorage.negative_prompt_embeds_2 = negative_prompt_embeds_2.to('cpu')
-        HunyuanStorage.prompt_attention_mask_2 = prompt_attention_mask_2.to('cpu')
-        HunyuanStorage.negative_prompt_attention_mask_2 = negative_prompt_attention_mask_2.to('cpu')
-        HunyuanStorage.lastPrompt = positive_prompt
-        HunyuanStorage.lastNegative = negative_prompt
-
-        del pipe.tokenizer, pipe.tokenizer_2, pipe.text_encoder, pipe.text_encoder_2
-        pipe.tokenizer = None
-        pipe.tokenizer_2 = None
-        pipe.text_encoder = None
-        pipe.text_encoder_2 = None
-
-        gc.collect()
-        torch.cuda.empty_cache()
-
+#    pipe.transformer.enable_forward_chunking(chunk_size=1, dim=1)      #>= 0.28.2 ?
     pipe.vae.enable_tiling(True)
 #    pipe.enable_attention_slicing()
 
@@ -272,14 +346,14 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
         width=width,
         guidance_scale=guidance_scale,
         guidance_rescale=guidance_rescale,
-        prompt_embeds=prompt_embeds,
-        negative_prompt_embeds=negative_prompt_embeds,
-        prompt_attention_mask=prompt_attention_mask,
-        negative_prompt_attention_mask=negative_prompt_attention_mask,
-        prompt_embeds_2=prompt_embeds_2,
-        negative_prompt_embeds_2=negative_prompt_embeds_2,
-        prompt_attention_mask_2=prompt_attention_mask_2,
-        negative_prompt_attention_mask_2=negative_prompt_attention_mask_2,
+        prompt_embeds=HunyuanStorage.positive_embeds_1.to('cuda').to(torch.float16),
+        negative_prompt_embeds=HunyuanStorage.negative_embeds_1.to('cuda').to(torch.float16),
+        prompt_attention_mask=HunyuanStorage.positive_attention_1.to('cuda').to(torch.float16),
+        negative_prompt_attention_mask=HunyuanStorage.negative_attention_1.to('cuda').to(torch.float16),
+        prompt_embeds_2=HunyuanStorage.positive_embeds_2.to('cuda').to(torch.float16),
+        negative_prompt_embeds_2=HunyuanStorage.negative_embeds_2.to('cuda').to(torch.float16),
+        prompt_attention_mask_2=HunyuanStorage.positive_attention_2.to('cuda').to(torch.float16),
+        negative_prompt_attention_mask_2=HunyuanStorage.negative_attention_2.to('cuda').to(torch.float16),
         num_images_per_prompt=num_images,
         output_type="pil",
         generator=generator,
@@ -288,8 +362,6 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
     ).images
 
     del pipe, generator, i2i_latents
-    del prompt_embeds, negative_prompt_embeds, prompt_attention_mask, negative_prompt_attention_mask
-    del prompt_embeds_2, negative_prompt_embeds_2, prompt_attention_mask_2, negative_prompt_attention_mask_2
 
     gc.collect()
     torch.cuda.empty_cache()
@@ -391,9 +463,9 @@ def on_ui_tabs():
                     negative_prompt = gr.Textbox(label='Negative', placeholder='', lines=1.1)
                     style = gr.Dropdown([x[0] for x in styles.styles_list], label='Style', value="(None)", type='index', scale=0)
                 with gr.Row():
-                    width = gr.Slider(label='Width', minimum=512, maximum=1536, step=32, value=1024, elem_id="Hunyuan-DiT_width")
+                    width = gr.Slider(label='Width', minimum=768, maximum=1280, step=32, value=1024, elem_id="Hunyuan-DiT_width")
                     swapper = ToolButton(value="\U000021C5")
-                    height = gr.Slider(label='Height', minimum=512, maximum=1536, step=32, value=1024, elem_id="Hunyuan-DiT_height")
+                    height = gr.Slider(label='Height', minimum=768, maximum=1280, step=32, value=1024, elem_id="Hunyuan-DiT_height")
 
                 with gr.Row():
                     guidance_scale = gr.Slider(label='CFG', minimum=1, maximum=16, step=0.5, value=1, scale=2)

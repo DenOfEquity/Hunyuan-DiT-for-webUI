@@ -24,6 +24,10 @@ diffusers>=0.28.1
 ```
 
 ---
+#### 12/06/2024 ####
+* code cleanup, handles the text encoders manually, better for VRAM usage. In good conditions, no speed up; but bad conditions are harder to hit.
+* moved styles to unique file
+
 #### 08/06/2024 ####
 * added support for the distilled version, which is better when using fewer steps. I download only the distilled transformer, so the cost is ~5.6GB rather than another 13GB. Toggle the D icon, top-right of left column: lit up means using the distilled version. Downloaded on demand, cached locally. Should this be new default?
 
@@ -51,7 +55,6 @@ Of course, always same prompt, seed, sampler. Non-distilled version.
 From left to right:
 * cfg: 2, 4, 8, 8
 * steps: 20, 20, 20, 40
-  
 Top row: 0 rescale; bottom row: 0.75 rescale
 
 ![](rescale.png "rescale CFG sequence")
