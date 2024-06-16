@@ -24,6 +24,12 @@ diffusers>=0.28.1
 ```
 
 ---
+#### 16/06/2024 ####
+* added v1.1. Enabled by default, but optional by using the obvious button. I think only the transformer has changed, so 5.64GB extra download (same for Distilled, if used). From brief tests, it does seem to be a step-up.
+* option to not use T5 text encoder
+* settings to colourize the initial noise. This offers some extra control over the output and is near-enough free. Leave strength at 0.0 to bypass it.
+* experimental double prompting - subprompts for each text encoder. Split prompts with '|', first subprompt for CLIP, second for T5. If not used: same prompt sent to both, same as previous behaviour.
+
 #### 12/06/2024 ####
 * code cleanup, handles the text encoders manually, better for VRAM usage. In good conditions, no speed up; but bad conditions are harder to hit.
 * moved styles to unique file

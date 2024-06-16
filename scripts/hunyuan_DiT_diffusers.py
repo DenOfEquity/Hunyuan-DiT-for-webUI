@@ -34,6 +34,9 @@ class HunyuanStorage:
     negative_attention_2 = None
     karras = False
     useDistilled = False
+    useV11 = True
+    useT5 = True
+    noiseRGBA = [0.0, 0.0, 0.0, 0.0]
 
 from transformers import BertModel, BertTokenizer, CLIPImageProcessor, MT5Tokenizer, T5EncoderModel
 
@@ -86,9 +89,35 @@ def create_infotext(positive_prompt, negative_prompt, guidance_scale, guidance_r
 def predict(positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale,
             num_steps, sampling_seed, num_images, scheduler, style, i2iSource, i2iDenoise, *args):
 
-    if style != 0:
-        positive_prompt = styles.styles_list[style][1].replace("{prompt}", positive_prompt)
-        negative_prompt = styles.styles_list[style][2] + negative_prompt
+    torch.set_grad_enabled(False)
+
+    #   triple prompt, automatic support, no longer needs button to enable
+    split_positive = positive_prompt.split('|')
+    pc = len(split_positive)
+    if pc == 1:
+        positive_prompt_1 = positive_prompt
+        positive_prompt_2 = positive_prompt
+    elif pc >= 2:
+        positive_prompt_1 = split_positive[0].strip()
+        positive_prompt_2 = split_positive[1].strip()
+        
+    split_negative = negative_prompt.split('|')
+    nc = len(split_negative)
+    if nc == 1:
+        negative_prompt_1 = negative_prompt
+        negative_prompt_2 = negative_prompt
+    elif nc >= 2:
+        negative_prompt_1 = split_negative[0].strip()
+        negative_prompt_2 = split_negative[1].strip()
+
+    if style != 0:  #better to rebuild stored prompt from _1,_2,_3 so random changes at end /whitespace effect nothing
+        positive_prompt_1 = styles.styles_list[style][1].replace("{prompt}", positive_prompt_1)
+        positive_prompt_2 = styles.styles_list[style][1].replace("{prompt}", positive_prompt_2)
+        negative_prompt_1 = styles.styles_list[style][2] + negative_prompt_1
+        negative_prompt_2 = styles.styles_list[style][2] + negative_prompt_2
+
+    combined_positive = positive_prompt_1 + " |\n" + positive_prompt_2
+    combined_negative = negative_prompt_1 + " |\n" + negative_prompt_2
 
     if i2iSource == None:
         i2iDenoise = 1
@@ -106,74 +135,73 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 #    use_lu_lambdas = args.use_lu_lambdas
 
     #first: tokenize and text_encode
-    useCachedEmbeds = (HunyuanStorage.lastPrompt == positive_prompt and HunyuanStorage.lastNegative == negative_prompt)
+    useCachedEmbeds = (HunyuanStorage.lastPrompt == combined_positive and HunyuanStorage.lastNegative == combined_negative)
     if useCachedEmbeds:
         print ("Skipping text encoders and tokenizers.")
         #   nothing to do
     else:
-        with torch.no_grad():
-            #   tokenize 1
-            tokenizer = BertTokenizer.from_pretrained(
-                "Tencent-Hunyuan/HunyuanDiT-Diffusers",
-                local_files_only=False, cache_dir=".//models//diffusers//",
-                subfolder='tokenizer',
-                torch_dtype=torch.float16,
-                )
-            #   positive
-            text_inputs = tokenizer(
-                positive_prompt,
-                padding="max_length",
-                max_length=77,
-                truncation=True,
-                return_attention_mask=True,
-                return_tensors="pt",
+        #   tokenize 1
+        tokenizer = BertTokenizer.from_pretrained(
+            "Tencent-Hunyuan/HunyuanDiT-Diffusers",
+            local_files_only=False, cache_dir=".//models//diffusers//",
+            subfolder='tokenizer',
+            torch_dtype=torch.float16,
             )
-            positive_text_input_ids = text_inputs.input_ids.to('cuda')
-            positive_attention_1 = text_inputs.attention_mask.to('cuda')
-            #   negative
-            text_inputs = tokenizer(
-                negative_prompt,
-                padding="max_length",
-                max_length=77,
-                truncation=True,
-                return_attention_mask=True,
-                return_tensors="pt",
-            )
-            negative_text_input_ids = text_inputs.input_ids.to('cuda')
-            negative_attention_1 = text_inputs.attention_mask.to('cuda')
+        #   positive
+        text_inputs = tokenizer(
+            positive_prompt_1,
+            padding="max_length",
+            max_length=77,
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors="pt",
+        )
+        positive_text_input_ids = text_inputs.input_ids.to('cuda')
+        positive_attention_1 = text_inputs.attention_mask.to('cuda')
+        #   negative
+        text_inputs = tokenizer(
+            negative_prompt_1,
+            padding="max_length",
+            max_length=77,
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors="pt",
+        )
+        negative_text_input_ids = text_inputs.input_ids.to('cuda')
+        negative_attention_1 = text_inputs.attention_mask.to('cuda')
 
-            del tokenizer
-            #end tokenize 1
+        del tokenizer
+        #end tokenize 1
 
-            #   text encode 1
-            text_encoder = BertModel.from_pretrained(
-                "Tencent-Hunyuan/HunyuanDiT-Diffusers",
-                local_files_only=False, cache_dir=".//models//diffusers//",
-                subfolder='text_encoder',
-                torch_dtype=torch.float16,
-                ).to('cuda')
+        #   text encode 1
+        text_encoder = BertModel.from_pretrained(
+            "Tencent-Hunyuan/HunyuanDiT-Diffusers",
+            local_files_only=False, cache_dir=".//models//diffusers//",
+            subfolder='text_encoder',
+            torch_dtype=torch.float16,
+            ).to('cuda')
 
-            prompt_embeds = text_encoder(
-                positive_text_input_ids,
-                attention_mask=positive_attention_1,
-            )
-            positive_embeds_1 = prompt_embeds[0]
-            positive_attention_1 = positive_attention_1.repeat(num_images, 1)
+        prompt_embeds = text_encoder(
+            positive_text_input_ids,
+            attention_mask=positive_attention_1,
+        )
+        positive_embeds_1 = prompt_embeds[0]
+        positive_attention_1 = positive_attention_1.repeat(num_images, 1)
 
-            prompt_embeds = text_encoder(
-                negative_text_input_ids,
-                attention_mask=negative_attention_1,
-            )
-            negative_embeds_1 = prompt_embeds[0]
-            negative_attention_1 = negative_attention_1.repeat(num_images, 1)
+        prompt_embeds = text_encoder(
+            negative_text_input_ids,
+            attention_mask=negative_attention_1,
+        )
+        negative_embeds_1 = prompt_embeds[0]
+        negative_attention_1 = negative_attention_1.repeat(num_images, 1)
 
-            del text_encoder
-            #end text_encode 1
+        del text_encoder
+        #end text_encode 1
 
-            gc.collect()
-            torch.cuda.empty_cache()
+        gc.collect()
+        torch.cuda.empty_cache()
 
-
+        if HunyuanStorage.useT5 == True:
             #   tokenize 2
             tokenizer = MT5Tokenizer.from_pretrained(
                 "Tencent-Hunyuan/HunyuanDiT-Diffusers",
@@ -183,7 +211,7 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
                 )
             #   positive
             text_inputs = tokenizer(
-                positive_prompt,
+                positive_prompt_2,
                 padding="max_length",
                 max_length=256,
                 truncation=True,
@@ -194,7 +222,7 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
             positive_attention_2 = text_inputs.attention_mask.to('cuda')
             #   negative
             text_inputs = tokenizer(
-                negative_prompt,
+                negative_prompt_2,
                 padding="max_length",
                 max_length=256,
                 truncation=True,
@@ -232,6 +260,12 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 
             del text_encoder
             #end text_encode 2
+        else:
+            #256 is tokenizer max length from config; 2048 is transformer joint_attention_dim from its config
+            positive_embeds_2    = torch.zeros((num_images, 256, 2048))
+            positive_attention_2 = torch.zeros((num_images, 256))
+            negative_embeds_2    = torch.zeros((num_images, 256, 2048))
+            negative_attention_2 = torch.zeros((num_images, 256))
 
         HunyuanStorage.positive_embeds_1    = positive_embeds_1.to('cpu')
         HunyuanStorage.positive_attention_1 = positive_attention_1.to('cpu')
@@ -245,17 +279,18 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
         del positive_embeds_1, negative_embeds_1, positive_attention_1, negative_attention_1
         del positive_embeds_2, negative_embeds_2, positive_attention_2, negative_attention_2
 
-        HunyuanStorage.lastPrompt = positive_prompt
-        HunyuanStorage.lastNegative = negative_prompt
+        HunyuanStorage.lastPrompt = combined_positive
+        HunyuanStorage.lastNegative = combined_negative
 
     gc.collect()
     torch.cuda.empty_cache()
 
     #second: transformer/VAE
     source = "Tencent-Hunyuan/HunyuanDiT-Diffusers-Distilled" if HunyuanStorage.useDistilled else "Tencent-Hunyuan/HunyuanDiT-Diffusers"
+    source11 = "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled" if HunyuanStorage.useDistilled else "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers"
 
     transformer = HunyuanDiT2DModel.from_pretrained(
-        source,
+        source11 if (HunyuanStorage.useV11 == True) else source,
         local_files_only=False, cache_dir=".//models//diffusers//",
         subfolder='transformer',
         torch_dtype=torch.float16,
@@ -282,33 +317,50 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
     pipe.vae.enable_tiling(True)
 #    pipe.enable_attention_slicing()
 
-    with torch.no_grad():
-        #   if using resolution_binning, must use adjusted width/height here (don't overwrite values)
-        #   always generate the noise here
-        generator = [torch.Generator(device='cpu').manual_seed(fixed_seed+i) for i in range(num_images)]
-        shape = (
-            num_images,
-            pipe.transformer.config.in_channels,
-            int(height) // pipe.vae_scale_factor,
-            int(width) // pipe.vae_scale_factor,
-        )
+    #   if using resolution_binning, must use adjusted width/height here (don't overwrite values)
+    #   always generate the noise here
+    generator = [torch.Generator(device='cpu').manual_seed(fixed_seed+i) for i in range(num_images)]
+    shape = (
+        num_images,
+        pipe.transformer.config.in_channels,
+        int(height) // pipe.vae_scale_factor,
+        int(width) // pipe.vae_scale_factor,
+    )
 
-        i2i_latents = randn_tensor(shape, generator=generator, dtype=torch.float16).to('cuda').to(torch.float16)
+    i2i_latents = randn_tensor(shape, generator=generator, dtype=torch.float16).to('cuda').to(torch.float16)
+    #   colour the initial noise
+    if HunyuanStorage.noiseRGBA[3] != 0.0:
+        nr = HunyuanStorage.noiseRGBA[0] ** 0.5
+        ng = HunyuanStorage.noiseRGBA[1] ** 0.5
+        nb = HunyuanStorage.noiseRGBA[2] ** 0.5
 
-        if i2iSource != None:
-            i2iSource = i2iSource.resize((width, height))
+        imageR = torch.tensor(np.full((8,8), (nr), dtype=np.float32))
+        imageG = torch.tensor(np.full((8,8), (ng), dtype=np.float32))
+        imageB = torch.tensor(np.full((8,8), (nb), dtype=np.float32))
+        image = torch.stack((imageR, imageG, imageB), dim=0).unsqueeze(0)
 
-            image = pipe.image_processor.preprocess(i2iSource).to('cuda').to(torch.float16)
-            image_latents = pipe.vae.encode(image).latent_dist.sample(generator) * pipe.vae.config.scaling_factor * pipe.scheduler.init_noise_sigma
-            image_latents = image_latents.repeat(num_images, 1, 1, 1)
+        image = pipe.image_processor.preprocess(image).to('cuda').to(torch.float16)
+        image_latents = pipe.vae.encode(image).latent_dist.sample(generator) * pipe.vae.config.scaling_factor * pipe.scheduler.init_noise_sigma
+        image_latents = image_latents.repeat(num_images, 1, 1, 1)
 
-            pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
-            ts = torch.tensor([int(1000 * i2iDenoise) - 1], device='cpu')
-            ts = ts[:1].repeat(num_images)
+        torch.lerp (i2i_latents, image_latents, HunyuanStorage.noiseRGBA[3], out=i2i_latents)
+        del imageR, imageG, imageB, image, image_latents
+    #   end: colour the initial noise
 
-            i2i_latents = pipe.scheduler.add_noise(image_latents, i2i_latents, ts)
+    if i2iSource != None:
+        i2iSource = i2iSource.resize((width, height))
 
-            del image, image_latents, i2iSource
+        image = pipe.image_processor.preprocess(i2iSource).to('cuda').to(torch.float16)
+        image_latents = pipe.vae.encode(image).latent_dist.sample(generator) * pipe.vae.config.scaling_factor * pipe.scheduler.init_noise_sigma
+        image_latents = image_latents.repeat(num_images, 1, 1, 1)
+
+        pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
+        ts = torch.tensor([int(1000 * i2iDenoise) - 1], device='cpu')
+        ts = ts[:1].repeat(num_images)
+
+        i2i_latents = pipe.scheduler.add_noise(image_latents, i2i_latents, ts)
+
+        del image, image_latents, i2iSource
     
     if scheduler == 'DDPM':
         pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
@@ -338,28 +390,29 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 ##    pipe.scheduler.beta_schedule  = beta_schedule
 ##    pipe.scheduler.use_lu_lambdas = use_lu_lambdas
 
-    output = pipe(
-        prompt=None,
-        negative_prompt=None, 
-        num_inference_steps=num_steps,
-        height=height,
-        width=width,
-        guidance_scale=guidance_scale,
-        guidance_rescale=guidance_rescale,
-        prompt_embeds=HunyuanStorage.positive_embeds_1.to('cuda').to(torch.float16),
-        negative_prompt_embeds=HunyuanStorage.negative_embeds_1.to('cuda').to(torch.float16),
-        prompt_attention_mask=HunyuanStorage.positive_attention_1.to('cuda').to(torch.float16),
-        negative_prompt_attention_mask=HunyuanStorage.negative_attention_1.to('cuda').to(torch.float16),
-        prompt_embeds_2=HunyuanStorage.positive_embeds_2.to('cuda').to(torch.float16),
-        negative_prompt_embeds_2=HunyuanStorage.negative_embeds_2.to('cuda').to(torch.float16),
-        prompt_attention_mask_2=HunyuanStorage.positive_attention_2.to('cuda').to(torch.float16),
-        negative_prompt_attention_mask_2=HunyuanStorage.negative_attention_2.to('cuda').to(torch.float16),
-        num_images_per_prompt=num_images,
-        output_type="pil",
-        generator=generator,
-        use_resolution_binning=False,
-        latents=i2i_latents,
-    ).images
+    with torch.inference_mode():
+        output = pipe(
+            prompt=None,
+            negative_prompt=None, 
+            num_inference_steps=num_steps,
+            height=height,
+            width=width,
+            guidance_scale=guidance_scale,
+            guidance_rescale=guidance_rescale,
+            prompt_embeds=HunyuanStorage.positive_embeds_1.to('cuda').to(torch.float16),
+            negative_prompt_embeds=HunyuanStorage.negative_embeds_1.to('cuda').to(torch.float16),
+            prompt_attention_mask=HunyuanStorage.positive_attention_1.to('cuda').to(torch.float16),
+            negative_prompt_attention_mask=HunyuanStorage.negative_attention_1.to('cuda').to(torch.float16),
+            prompt_embeds_2=HunyuanStorage.positive_embeds_2.to('cuda').to(torch.float16),
+            negative_prompt_embeds_2=HunyuanStorage.negative_embeds_2.to('cuda').to(torch.float16),
+            prompt_attention_mask_2=HunyuanStorage.positive_attention_2.to('cuda').to(torch.float16),
+            negative_prompt_attention_mask_2=HunyuanStorage.negative_attention_2.to('cuda').to(torch.float16),
+            num_images_per_prompt=num_images,
+            output_type="pil",
+            generator=generator,
+            use_resolution_binning=False,
+            latents=i2i_latents,
+        ).images
 
     del pipe, generator, i2i_latents
 
@@ -370,7 +423,7 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
     result = []
     for image in output:
         info=create_infotext(
-            positive_prompt, negative_prompt,
+            combined_positive, combined_negative,
             guidance_scale, guidance_rescale, num_steps, 
             fixed_seed, scheduler,
             width, height, )
@@ -382,7 +435,7 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
             opts.outdir_samples or opts.outdir_txt2img_samples,
             "",
             fixed_seed,
-            positive_prompt,
+            combined_positive,
             opts.samples_format,
             info
         )
@@ -392,7 +445,7 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
     gc.collect()
     torch.cuda.empty_cache()
 
-    return result, gr.Button.update(value='Generate', variant='primary', interactive=True)
+    return gr.Button.update(value='Generate', variant='primary', interactive=True), result
 
 
 def on_ui_tabs():
@@ -433,14 +486,36 @@ def on_ui_tabs():
         else:
             HunyuanStorage.useDistilled = False
             return gr.Button.update(value='\U0001D53B', variant='secondary')
+    def toggleV11 ():
+        if HunyuanStorage.useV11 == False:
+            HunyuanStorage.useV11 = True
+            return gr.Button.update(variant='primary')
+        else:
+            HunyuanStorage.useV11 = False
+            return gr.Button.update(variant='secondary')
+    def toggleT5 ():
+        HunyuanStorage.lastPrompt = None
+        HunyuanStorage.lastNegative = None
+        if HunyuanStorage.useT5 == False:
+            HunyuanStorage.useT5 = True
+            return gr.Button.update(variant='primary')
+        else:
+            HunyuanStorage.useT5 = False
+            return gr.Button.update(variant='secondary')
 
 
-    def toggleGenerate ():
+    def toggleGenerate (R, G, B, A):
+        HunyuanStorage.noiseRGBA = [R, G, B, A]
         return gr.Button.update(value='...', variant='secondary', interactive=False)
 
     with gr.Blocks() as hunyuandit_block:
         with ResizeHandleRow():
             with gr.Column():
+                with gr.Row():
+                    karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas")
+                    distilled = ToolButton(value="\U0001D53B", variant='secondary', tooltip="use distilled model")
+                    v11 = ToolButton(value="1.1", variant='primary', tooltip="use v1.1 model")
+                    T5 = ToolButton(value="T5", variant='primary', tooltip="use T5 text encoder")
                 with gr.Row():
                     positive_prompt = gr.Textbox(label='Prompt', placeholder='Enter a prompt here...', default='', lines=1.1)
                     scheduler = gr.Dropdown(["DDPM",
@@ -455,9 +530,6 @@ def on_ui_tabs():
                                              "UniPC",
                                              ],
                         label='Sampler', value="SA-solver", type='value', scale=0)
-                    karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas")
-                    distilled = ToolButton(value="\U0001D53B", variant='secondary', tooltip="use distilled model")
-
 
                 with gr.Row():
                     negative_prompt = gr.Textbox(label='Negative', placeholder='', lines=1.1)
@@ -468,7 +540,7 @@ def on_ui_tabs():
                     height = gr.Slider(label='Height', minimum=768, maximum=1280, step=32, value=1024, elem_id="Hunyuan-DiT_height")
 
                 with gr.Row():
-                    guidance_scale = gr.Slider(label='CFG', minimum=1, maximum=16, step=0.5, value=1, scale=2)
+                    guidance_scale = gr.Slider(label='CFG', minimum=1, maximum=16, step=0.5, value=4, scale=2)
                     guidance_rescale = gr.Slider(label='rescale CFG', minimum=0, maximum=1, step=0.01, value=0, scale=2)
                 with gr.Row():
                     steps = gr.Slider(label='Steps', minimum=1, maximum=80, step=1, value=20, scale=2)
@@ -476,6 +548,13 @@ def on_ui_tabs():
                     random = ToolButton(value="\U0001f3b2\ufe0f")
                     reuseSeed = ToolButton(value="\u267b\ufe0f")
                     batch_size = gr.Number(label='Batch Size', minimum=1, maximum=9, value=1, precision=0, scale=0)
+
+                with gr.Accordion(label='the colour of noise', open=False):
+                    with gr.Row():
+                        initialNoiseR = gr.Slider(minimum=0, maximum=1.0, value=0.0, step=0.01,  label='red')
+                        initialNoiseG = gr.Slider(minimum=0, maximum=1.0, value=0.0, step=0.01,  label='green')
+                        initialNoiseB = gr.Slider(minimum=0, maximum=1.0, value=0.0, step=0.01,  label='blue')
+                        initialNoiseA = gr.Slider(minimum=0, maximum=0.1, value=0.0, step=0.001, label='strength')
 
                 with gr.Accordion(label='image to image', open=False):
                     with gr.Row():
@@ -508,6 +587,8 @@ def on_ui_tabs():
 
         karras.click(toggleKarras, inputs=[], outputs=karras)
         distilled.click(toggleDistilled, inputs=[], outputs=distilled)
+        v11.click(toggleV11, inputs=[], outputs=v11)
+        T5.click(toggleT5, inputs=[], outputs=T5)
         swapper.click(fn=None, _js="function(){switchWidthHeight('Hunyuan-DiT')}", inputs=None, outputs=None, show_progress=False)
         random.click(randomSeed, inputs=[], outputs=sampling_seed, show_progress=False)
         reuseSeed.click(reuseLastSeed, inputs=[], outputs=sampling_seed, show_progress=False)
@@ -517,8 +598,8 @@ def on_ui_tabs():
 
         output_gallery.select (fn=getGalleryIndex, inputs=[], outputs=[])
 
-        generate_button.click(toggleGenerate, inputs=[], outputs=[generate_button])
-        generate_button.click(predict, inputs=ctrls, outputs=[output_gallery, generate_button])
+        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA], outputs=[generate_button])
+        generate_button.click(predict, inputs=ctrls, outputs=[generate_button, output_gallery])
 
     return [(hunyuandit_block, "Hunyuan-DiT", "hunyuan")]
 
