@@ -394,7 +394,8 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 #   else uses default set by model (DDPM)
 
     pipe.scheduler.config.num_train_timesteps = int(1000 * i2iDenoise)
-    pipe.scheduler.config.use_karras_sigmas = HunyuanStorage.karras
+    if hasattr(pipe.scheduler.config, 'use_karras_sigmas'):
+        pipe.scheduler.config.use_karras_sigmas = HunyuanStorage.karras
 
 ##    pipe.scheduler.beta_schedule  = beta_schedule
 ##    pipe.scheduler.use_lu_lambdas = use_lu_lambdas
