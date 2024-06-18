@@ -24,6 +24,9 @@ diffusers>=0.28.1
 ```
 
 ---
+#### 17/06/2024 ####
+* minor addition to save noise colour settings to infotext
+
 #### 16/06/2024 ####
 * added v1.1. Enabled by default, but optional by using the obvious button. I think only the transformer has changed, so 5.64GB extra download (same for Distilled, if used). From brief tests, it does seem to be a step-up.
 * option to not use T5 text encoder

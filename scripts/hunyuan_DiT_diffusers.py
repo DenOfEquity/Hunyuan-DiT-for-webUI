@@ -69,6 +69,7 @@ def quote(text):
 def create_infotext(positive_prompt, negative_prompt, guidance_scale, guidance_rescale, steps, seed, scheduler, width, height):
     karras = " : Karras" if HunyuanStorage.karras == True else ""
     distilled = " : distilled" if HunyuanStorage.useDistilled == True else ""
+    version = " : v1.1" if HunyuanStorage.useV11 == True else ""
     generation_params = {
         "Size": f"{width}x{height}",
         "Seed": seed,
@@ -83,8 +84,10 @@ def create_infotext(positive_prompt, negative_prompt, guidance_scale, guidance_r
     if negative_prompt != "":
         prompt_text += (f"Negative: {negative_prompt}\n")
     generation_params_text = ", ".join([k if k == v else f'{k}: {quote(v)}' for k, v in generation_params.items() if v is not None])
+    
+    noise_text = f"\nInitial noise: {HunyuanStorage.noiseRGBA}" if HunyuanStorage.noiseRGBA[3] != 0.0 else ""
 
-    return f"Model: Hunyuan-DiT{distilled}\n{prompt_text}{generation_params_text}"
+    return f"Model: Hunyuan-DiT{version}{distilled}\n{prompt_text}{generation_params_text}{noise_text}"
 
 def predict(positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale,
             num_steps, sampling_seed, num_images, scheduler, style, i2iSource, i2iDenoise, *args):
@@ -327,7 +330,7 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
         int(width) // pipe.vae_scale_factor,
     )
 
-    i2i_latents = randn_tensor(shape, generator=generator, dtype=torch.float16).to('cuda').to(torch.float16)
+    latents = randn_tensor(shape, generator=generator, dtype=torch.float16).to('cuda').to(torch.float16)
     #   colour the initial noise
     if HunyuanStorage.noiseRGBA[3] != 0.0:
         nr = HunyuanStorage.noiseRGBA[0] ** 0.5
@@ -341,9 +344,15 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 
         image = pipe.image_processor.preprocess(image).to('cuda').to(torch.float16)
         image_latents = pipe.vae.encode(image).latent_dist.sample(generator) * pipe.vae.config.scaling_factor * pipe.scheduler.init_noise_sigma
-        image_latents = image_latents.repeat(num_images, 1, 1, 1)
+        image_latents = image_latents.repeat(num_images, 1, latents.size(2), latents.size(3))
 
-        torch.lerp (i2i_latents, image_latents, HunyuanStorage.noiseRGBA[3], out=i2i_latents)
+        for b in range(len(latents)):
+            for c in range(4):
+                latents[b][c] -= latents[b][c].mean()
+
+#        latents += image_latents * HunyuanStorage.noiseRGBA[3]
+        torch.lerp (latents, image_latents, HunyuanStorage.noiseRGBA[3], out=latents)
+
         del imageR, imageG, imageB, image, image_latents
     #   end: colour the initial noise
 
@@ -358,7 +367,7 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
         ts = torch.tensor([int(1000 * i2iDenoise) - 1], device='cpu')
         ts = ts[:1].repeat(num_images)
 
-        i2i_latents = pipe.scheduler.add_noise(image_latents, i2i_latents, ts)
+        latents = pipe.scheduler.add_noise(image_latents, latents, ts)
 
         del image, image_latents, i2iSource
     
@@ -411,10 +420,10 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
             output_type="pil",
             generator=generator,
             use_resolution_binning=False,
-            latents=i2i_latents,
+            latents=latents,
         ).images
 
-    del pipe, generator, i2i_latents
+    del pipe, generator, latents
 
     gc.collect()
     torch.cuda.empty_cache()
