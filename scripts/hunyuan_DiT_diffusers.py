@@ -22,6 +22,7 @@ import customStylesListHY as styles
 
 class HunyuanStorage:
     lastSeed = -1
+    galleryIndex = 0
     lastPrompt = None
     lastNegative = None
     positive_embeds_1 = None
