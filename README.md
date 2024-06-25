@@ -24,6 +24,10 @@ diffusers>=0.28.1
 ```
 
 ---
+#### 25/06/2024 ####
+* added option to caption using Florence-2, in image to image section. 'P' button toggles overwriting prompt, results always written to console.
+* minor code improvements
+
 #### 17/06/2024 ####
 * minor addition to save noise colour settings to infotext
 
