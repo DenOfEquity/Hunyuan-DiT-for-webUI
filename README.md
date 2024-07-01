@@ -15,8 +15,8 @@ almost current UI, imagine a 'D' icon next to the 'K'
 
 
 ---
-### downloads models on first run - ~13.4GB (optionally +5.6GB) ###
-### needs updated *diffusers 0.28.1* ###
+### downloads models on first run - ~13.4GB (optionally +5.6GB for variants) ###
+### needs *diffusers 0.28.1* or newer ###
 
 Easiest way to ensure necessary diffusers release is installed is to edit **requirements_versions.txt** in the webUI folder.
 ```
@@ -24,6 +24,15 @@ diffusers>=0.28.1
 ```
 
 ---
+#### 01/07/2024 ####
+* fix for batch, tested with diffusers versions 0.29.1 and 0.29.2. On my low-end hardware, this takes *n* times longer to generate, up to the point where it starts hitting shared memory, then it gets *really* slow.
+* model selection now via dropdown, in preparation for v1.2 (not much information yet, needs a code update, so still have v1.1 as default)
+* (controlnet: waiting for diffusers update)
+
+#### 29/06/2024 ####
+* added lora support, Tencent original form (with strength control) and pre-converted diffusers form (ignores strength control). Of course, there are already alternate form loras available which I can't load. Some sort of conversion script may be possible. Generation will end early, with a console message, for those loras.
+* mask for image to image
+
 #### 25/06/2024 ####
 * added option to caption using Florence-2, in image to image section. 'P' button toggles overwriting prompt, results always written to console.
 * minor code improvements

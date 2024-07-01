@@ -17,13 +17,13 @@ from PIL import Image
 #workaround for unnecessary flash_attn requirement for Florence-2
 from unittest.mock import patch
 from transformers.dynamic_module_utils import get_imports
-from transformers import AutoProcessor, AutoModelForCausalLM
+from transformers import AutoProcessor, AutoModelForCausalLM 
 
 torch.backends.cuda.enable_flash_sdp(True)
 #torch.backends.cuda.enable_mem_efficient_sdp(True)
 
-
 import customStylesListHY as styles
+
 
 class HunyuanStorage:
     lastSeed = -1
@@ -39,16 +39,60 @@ class HunyuanStorage:
     prompt_attention_2 = None
     negative_attention_2 = None
     karras = False
-    useDistilled = False
-    useV11 = True
     useT5 = True
     noiseRGBA = [0.0, 0.0, 0.0, 0.0]
     captionToPrompt = False
+    i2iAllSteps = False
+    lora = None
+    lora_scale = 1.0
+    last_batch = 0
+
+## from huggingace.co/Tencent-Hunyuan/HYDiT-LoRA
+def load_hunyuan_dit_lora(transformer_state_dict, lora_state_dict, lora_scale):
+    num_layers = 40
+    for i in range(num_layers):
+        Wqkv = torch.matmul(lora_state_dict[f"base_model.model.blocks.{i}.attn1.Wqkv.lora_B.weight"], 
+                            lora_state_dict[f"base_model.model.blocks.{i}.attn1.Wqkv.lora_A.weight"]) 
+        q, k, v = torch.chunk(Wqkv, 3, dim=0)
+        q *= lora_scale
+        k *= lora_scale
+        v *= lora_scale
+
+        transformer_state_dict[f"blocks.{i}.attn1.to_q.weight"] += q.to('cpu')
+        transformer_state_dict[f"blocks.{i}.attn1.to_k.weight"] += k.to('cpu')
+        transformer_state_dict[f"blocks.{i}.attn1.to_v.weight"] += v.to('cpu')
+
+        out_proj = torch.matmul(lora_state_dict[f"base_model.model.blocks.{i}.attn1.out_proj.lora_B.weight"], 
+                                lora_state_dict[f"base_model.model.blocks.{i}.attn1.out_proj.lora_A.weight"]) 
+        transformer_state_dict[f"blocks.{i}.attn1.to_out.0.weight"] += lora_scale * out_proj.to('cpu')
+
+        q_proj = torch.matmul(lora_state_dict[f"base_model.model.blocks.{i}.attn2.q_proj.lora_B.weight"], 
+                              lora_state_dict[f"base_model.model.blocks.{i}.attn2.q_proj.lora_A.weight"])
+        transformer_state_dict[f"blocks.{i}.attn2.to_q.weight"] += lora_scale * q_proj.to('cpu')
+
+        kv_proj = torch.matmul(lora_state_dict[f"base_model.model.blocks.{i}.attn2.kv_proj.lora_B.weight"], 
+                               lora_state_dict[f"base_model.model.blocks.{i}.attn2.kv_proj.lora_A.weight"])
+        k, v = torch.chunk(kv_proj, 2, dim=0)
+        transformer_state_dict[f"blocks.{i}.attn2.to_k.weight"] += k.to('cpu')
+        transformer_state_dict[f"blocks.{i}.attn2.to_v.weight"] += v.to('cpu')
+
+        out_proj = torch.matmul(lora_state_dict[f"base_model.model.blocks.{i}.attn2.out_proj.lora_B.weight"], 
+                                lora_state_dict[f"base_model.model.blocks.{i}.attn2.out_proj.lora_A.weight"]) 
+        transformer_state_dict[f"blocks.{i}.attn2.to_out.0.weight"] += lora_scale * out_proj.to('cpu')
+    
+    q_proj = torch.matmul(lora_state_dict["base_model.model.pooler.q_proj.lora_B.weight"], lora_state_dict["base_model.model.pooler.q_proj.lora_A.weight"])
+    transformer_state_dict["time_extra_emb.pooler.q_proj.weight"] += lora_scale * q_proj.to('cpu')
+    
+    return transformer_state_dict
+
 
 
 from transformers import BertModel, BertTokenizer, CLIPImageProcessor, MT5Tokenizer, T5EncoderModel
+#from diffusers.models.controlnet_hunyuan import HunyuanDiT2DControlNetModel#, HunyuanDiT2DMultiControlNetModel
 
-from diffusers import HunyuanDiTPipeline
+from scripts.HY_pipeline import HunyuanDiTPipeline_DoE_combined
+
+#from diffusers import HunyuanDiTPipeline
 from diffusers import AutoencoderKL, HunyuanDiT2DModel
 
 from diffusers import DEISMultistepScheduler, DPMSolverSinglestepScheduler, DPMSolverMultistepScheduler, DPMSolverSDEScheduler
@@ -56,6 +100,7 @@ from diffusers import EulerAncestralDiscreteScheduler, EulerDiscreteScheduler, U
 from diffusers import SASolverScheduler
 
 from diffusers.utils.torch_utils import randn_tensor
+from diffusers.utils import logging
 
 import argparse
 import pathlib
@@ -74,19 +119,18 @@ def quote(text):
     return json.dumps(text, ensure_ascii=False)
 
 # modules/processing.py
-def create_infotext(positive_prompt, negative_prompt, guidance_scale, guidance_rescale, steps, seed, scheduler, width, height):
-    karras = " : Karras" if HunyuanStorage.karras == True else ""
-    distilled = " : distilled" if HunyuanStorage.useDistilled == True else ""
-    version = " : v1.1" if HunyuanStorage.useV11 == True else ""
+def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, guidance_rescale, steps, seed, scheduler, width, height, controlNetSettings, state):
+    karras = " : Karras" if state[1] == True else ""
     generation_params = {
+        "T5":           '✓' if state[0] else '✗', #2713, 2717
         "Size": f"{width}x{height}",
         "Seed": seed,
         "Scheduler": f"{scheduler}{karras}",
         "Steps": steps,
         "CFG": f"{guidance_scale} ({guidance_rescale})",
-        "RNG": opts.randn_source if opts.randn_source != "GPU" else None
+        "RNG": opts.randn_source if opts.randn_source != "GPU" else None,
+        "controlNet": controlNetSettings,
     }
-
 
     prompt_text = f"Prompt: {positive_prompt}\n"
     if negative_prompt != "":
@@ -95,12 +139,41 @@ def create_infotext(positive_prompt, negative_prompt, guidance_scale, guidance_r
     
     noise_text = f"\nInitial noise: {HunyuanStorage.noiseRGBA}" if HunyuanStorage.noiseRGBA[3] != 0.0 else ""
 
-    return f"Model: Hunyuan-DiT{version}{distilled}\n{prompt_text}{generation_params_text}{noise_text}"
+    return f"Model: {model}\n{prompt_text}{generation_params_text}{noise_text}"
 
-def predict(positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale,
-            num_steps, sampling_seed, num_images, scheduler, style, i2iSource, i2iDenoise, *args):
+def predict(model, positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale,
+            num_steps, sampling_seed, num_images, scheduler, style, i2iSource, i2iDenoise, maskSource, 
+            controlNet, controlNetImage, controlNetStrength, controlNetStart, controlNetEnd, 
+            *args):
 
     torch.set_grad_enabled(False)
+
+    volatileState = [HunyuanStorage.useT5, HunyuanStorage.karras]
+
+    if controlNet != 0 and controlNetImage != None and controlNetStrength > 0.0:
+        controlNetImage = controlNetImage.resize((width, height))
+        useControlNet = ['Tencent-Hunyuan/HunyuanDiT-v1.1-ControlNet-Diffusers-Canny', 
+                         'Tencent-Hunyuan/HunyuanDiT-v1.1-ControlNet-Diffusers-Depth', 
+                         'Tencent-Hunyuan/HunyuanDiT-v1.1-ControlNet-Diffusers-Pose'][controlNet-1]
+    else:
+        controlNetStrength = 0.0
+        useControlNet = None
+        
+    useControlNet = None
+
+    if i2iSource != None:
+        if HunyuanStorage.i2iAllSteps == True:
+            num_steps = int(num_steps / i2iDenoise)
+        i2iSource = i2iSource.resize((width, height))
+    else:
+        i2iDenoise = 1.0
+        maskSource = None
+
+    if maskSource != None:
+        maskSource = maskSource.resize((int(width/8), int(height/8)))
+    else:
+        maskCutOff = 1.0
+
 
     #   double prompt, automatic support, no longer needs button to enable
     split_positive = positive_prompt.split('|')
@@ -130,11 +203,6 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
     combined_positive = positive_prompt_1 + " |\n" + positive_prompt_2
     combined_negative = negative_prompt_1 + " |\n" + negative_prompt_2
 
-    if i2iSource == None:
-        i2iDenoise = 1
-    if i2iDenoise < (num_steps + 1) / 1000:
-        i2iDenoise = (num_steps + 1) / 1000
-
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -146,7 +214,9 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 #    use_lu_lambdas = args.use_lu_lambdas
 
     #first: tokenize and text_encode
-    useCachedEmbeds = (HunyuanStorage.lastPrompt == combined_positive and HunyuanStorage.lastNegative == combined_negative)
+    useCachedEmbeds = (HunyuanStorage.lastPrompt == combined_positive and 
+                       HunyuanStorage.lastNegative == combined_negative and
+                       HunyuanStorage.last_batch == num_images)
     if useCachedEmbeds:
         print ("Skipping text encoders and tokenizers.")
         #   nothing to do
@@ -181,7 +251,7 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
         negative_text_input_ids = text_inputs.input_ids.to('cuda')
         negative_attention_1 = text_inputs.attention_mask.to('cuda')
 
-        del tokenizer
+        del tokenizer, text_inputs
         #end tokenize 1
 
         #   text encode 1
@@ -196,17 +266,21 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
             positive_text_input_ids,
             attention_mask=positive_attention_1,
         )
-        positive_embeds_1 = prompt_embeds[0]
+        bs_embed, seq_len, _ = prompt_embeds[0].shape
+        positive_embeds_1 = prompt_embeds[0].repeat(1, num_images, 1)
+        positive_embeds_1 = positive_embeds_1.view(bs_embed * num_images, seq_len, -1)
         positive_attention_1 = positive_attention_1.repeat(num_images, 1)
 
         prompt_embeds = text_encoder(
             negative_text_input_ids,
             attention_mask=negative_attention_1,
         )
-        negative_embeds_1 = prompt_embeds[0]
+        seq_len = prompt_embeds[0].shape[1]
+        negative_embeds_1 = prompt_embeds[0].repeat(1, num_images, 1)
+        negative_embeds_1 = negative_embeds_1.view(num_images, seq_len, -1)
         negative_attention_1 = negative_attention_1.repeat(num_images, 1)
 
-        del text_encoder
+        del text_encoder, prompt_embeds
         #end text_encode 1
 
         gc.collect()
@@ -243,7 +317,7 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
             negative_text_input_ids = text_inputs.input_ids.to('cuda')
             negative_attention_2 = text_inputs.attention_mask.to('cuda')
 
-            del tokenizer
+            del tokenizer, text_inputs
             #end tokenize 2
 
             #   text encode 2
@@ -259,17 +333,21 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
                 positive_text_input_ids,
                 attention_mask=positive_attention_2,
             )
-            positive_embeds_2 = prompt_embeds[0]
+            bs_embed, seq_len, _ = prompt_embeds[0].shape
+            positive_embeds_2 = prompt_embeds[0].repeat(1, num_images, 1)
+            positive_embeds_2 = positive_embeds_2.view(bs_embed * num_images, seq_len, -1)
             positive_attention_2 = positive_attention_2.repeat(num_images, 1)
 
             prompt_embeds = text_encoder(
                 negative_text_input_ids,
                 attention_mask=negative_attention_2,
             )
-            negative_embeds_2 = prompt_embeds[0]
+            seq_len = prompt_embeds[0].shape[1]
+            negative_embeds_2 = prompt_embeds[0].repeat(1, num_images, 1)
+            negative_embeds_2 = negative_embeds_2.view(num_images, seq_len, -1)
             negative_attention_2 = negative_attention_2.repeat(num_images, 1)
 
-            del text_encoder
+            del text_encoder, prompt_embeds
             #end text_encode 2
         else:
             #256 is tokenizer max length from config; 2048 is transformer joint_attention_dim from its config
@@ -292,27 +370,27 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 
         HunyuanStorage.lastPrompt = combined_positive
         HunyuanStorage.lastNegative = combined_negative
+        HunyuanStorage.last_batch = num_images
 
     gc.collect()
     torch.cuda.empty_cache()
 
     #second: transformer/VAE
-    source = "Tencent-Hunyuan/HunyuanDiT-Diffusers-Distilled" if HunyuanStorage.useDistilled else "Tencent-Hunyuan/HunyuanDiT-Diffusers"
-    source11 = "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers-Distilled" if HunyuanStorage.useDistilled else "Tencent-Hunyuan/HunyuanDiT-v1.1-Diffusers"
-
+    source = "Tencent-Hunyuan/" + model
     transformer = HunyuanDiT2DModel.from_pretrained(
-        source11 if (HunyuanStorage.useV11 == True) else source,
+        source,
         local_files_only=False, cache_dir=".//models//diffusers//",
         subfolder='transformer',
         torch_dtype=torch.float16,
         )
- 
-    pipe = HunyuanDiTPipeline.from_pretrained(
+
+#    controlnet=HunyuanDiT2DControlNetModel.from_pretrained(useControlNet, cache_dir=".//models//diffusers//", torch_dtype=torch.float16) if useControlNet else None
+    controlnet = None
+
+    pipe = HunyuanDiTPipeline_DoE_combined.from_pretrained(
         "Tencent-Hunyuan/HunyuanDiT-Diffusers",
         local_files_only=False, cache_dir=".//models//diffusers//",
         transformer=transformer,
-        requires_safety_checker=False,
-        safety_checker=None,
         feature_extractor=None,
         torch_dtype=torch.float16,
         tokenizer=None,
@@ -320,6 +398,7 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
         tokenizer_2=None,
         text_encoder_2=None,
         use_safetensors=True,
+#        controlnet=controlnet,
         )
     pipe.to('cuda')
     pipe.enable_model_cpu_offload()
@@ -364,21 +443,34 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
         del imageR, imageG, imageB, image, image_latents
     #   end: colour the initial noise
 
-    if i2iSource != None:
-        i2iSource = i2iSource.resize((width, height))
+#   load in LoRA
 
-        image = pipe.image_processor.preprocess(i2iSource).to('cuda').to(torch.float16)
-        image_latents = pipe.vae.encode(image).latent_dist.sample(generator) * pipe.vae.config.scaling_factor * pipe.scheduler.init_noise_sigma
-        image_latents = image_latents.repeat(num_images, 1, 1, 1)
+    if HunyuanStorage.lora and HunyuanStorage.lora != "(None)" and HunyuanStorage.lora_scale != 0.0:
+        lorafile = ".//models/diffusers//HunyuanLora//" + HunyuanStorage.lora + ".safetensors"
 
-        pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
-        ts = torch.tensor([int(1000 * i2iDenoise) - 1], device='cpu')
-        ts = ts[:1].repeat(num_images)
-
-        latents = pipe.scheduler.add_noise(image_latents, latents, ts)
-
-        del image, image_latents, i2iSource
-    
+        from safetensors import safe_open
+        lora_state_dict = {}
+        with safe_open(lorafile, framework="pt", device=0) as f:
+            for k in f.keys():
+                lora_state_dict[k] = f.get_tensor(k)
+                
+        if "base_model.model.blocks.0.attn1.Wqkv.lora_A.weight" in lora_state_dict:  #   needs converting from Tencent HY Lora
+            transformer_state_dict = pipe.transformer.state_dict()
+            transformer_state_dict = load_hunyuan_dit_lora(transformer_state_dict, lora_state_dict, lora_scale=HunyuanStorage.lora_scale)
+            pipe.transformer.load_state_dict(transformer_state_dict)
+        elif "lora_unet_blocks_0_attn1_Wqkv.alpha" in lora_state_dict:                       #   needs converting from safetensors lora
+            print ("Unsupported LoRA type.")
+            return gr.Button.update(value='Generate', variant='primary', interactive=True), None
+        else:                                                       #   already converted, or incompatible
+            try:
+                logging.set_verbosity(logging.ERROR)
+                pipe.load_lora_weights(lorafile, local_files_only=True, adapter_name=HunyuanStorage.lora)
+                logging.set_verbosity(logging.WARN)
+            except:
+                print ("Failed: LoRA: " + lorafile)
+                return gr.Button.update(value='Generate', variant='primary', interactive=True), None
+        del lora_state_dict
+   
     if scheduler == 'DDPM':
         pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
     elif scheduler == 'DEIS':
@@ -401,7 +493,6 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
         pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 #   else uses default set by model (DDPM)
 
-    pipe.scheduler.config.num_train_timesteps = int(1000 * i2iDenoise)
     if hasattr(pipe.scheduler.config, 'use_karras_sigmas'):
         pipe.scheduler.config.use_karras_sigmas = HunyuanStorage.karras
 
@@ -412,8 +503,10 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 
     with torch.inference_mode():
         output = pipe(
-            prompt=None,
-            negative_prompt=None, 
+            image=i2iSource,
+            strength=i2iDenoise,
+            mask_image=maskSource,
+
             num_inference_steps=num_steps,
             height=height,
             width=width,
@@ -432,21 +525,32 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
             generator=generator,
             use_resolution_binning=False,
             latents=latents,
-        ).images
 
-    del pipe, generator, latents
+            control_image=controlNetImage, 
+            controlnet_conditioning_scale=controlNetStrength,  
+            control_guidance_start=controlNetStart,
+            control_guidance_end=controlNetEnd,
+            
+#            cross_attention_kwargs={"scale": HunyuanStorage.lora_scale }    #   currently does nothing - HYDiT forward pass doesn't take this input
+        )
+
+    del pipe, generator, latents, controlNetImage
 
     gc.collect()
     torch.cuda.empty_cache()
 
+    if useControlNet != None:
+        useControlNet += f" strength: {controlNetStrength}, step range: {controlNetStart}-{controlNetEnd}"
 
     result = []
     for image in output:
         info=create_infotext(
+            model, 
             combined_positive, combined_negative,
             guidance_scale, guidance_rescale, num_steps, 
             fixed_seed, scheduler,
-            width, height, )
+            width, height, 
+            useControlNet, volatileState)
 
         result.append((image, info))
         
@@ -469,6 +573,23 @@ def predict(positive_prompt, negative_prompt, width, height, guidance_scale, gui
 
 
 def on_ui_tabs():
+    def buildLoRAList ():
+        loras = ["(None)"]
+        
+        import glob
+        customLoRA = glob.glob(".\models\diffusers\HunyuanLora\*.safetensors")
+
+        for i in customLoRA:
+            filename = i.split('\\')[-1]
+            loras.append(filename[0:-12])
+
+        return loras
+
+    loras = buildLoRAList ()
+
+    def refreshLoRAs ():
+        loras = buildLoRAList ()
+        return gr.Dropdown.update(choices=loras)
    
     def getGalleryIndex (evt: gr.SelectData):
         HunyuanStorage.galleryIndex = evt.index
@@ -491,7 +612,6 @@ def on_ui_tabs():
             return newImage[0]
         except:
             return None
-        return gr.Button.update(variant=['secondary', 'primary'][SD3Storage.CL])
 
     def toggleC2P ():
         HunyuanStorage.captionToPrompt ^= True
@@ -500,18 +620,15 @@ def on_ui_tabs():
         HunyuanStorage.karras ^= True
         return gr.Button.update(variant=['secondary', 'primary'][HunyuanStorage.karras],
                                 value=['\U0001D542', '\U0001D40A'][HunyuanStorage.karras])
-    def toggleDistilled ():
-        HunyuanStorage.useDistilled ^= True
-        return gr.Button.update(variant=['secondary', 'primary'][HunyuanStorage.useDistilled],
-                                value=['\U0001D53B', '\U0001D403'][HunyuanStorage.useDistilled])
-    def toggleV11 ():
-        HunyuanStorage.useV11 ^= True
-        return gr.Button.update(variant=['secondary', 'primary'][HunyuanStorage.useV11])
+
     def toggleT5 ():
         HunyuanStorage.lastPrompt = None
         HunyuanStorage.lastNegative = None
         HunyuanStorage.useT5 ^= True
         return gr.Button.update(variant=['secondary', 'primary'][HunyuanStorage.useT5])
+    def toggleAS ():
+        HunyuanStorage.i2iAllSteps ^= True
+        return gr.Button.update(variant=['secondary', 'primary'][HunyuanStorage.i2iAllSteps])
 
     def fixed_get_imports(filename: str | os.PathLike) -> list[str]:
         if not str(filename).endswith("modeling_florence2.py"):
@@ -564,18 +681,26 @@ def on_ui_tabs():
         else:
             return originalPrompt
 
-    def toggleGenerate (R, G, B, A):
+    def toggleGenerate (R, G, B, A, lora, scale):
         HunyuanStorage.noiseRGBA = [R, G, B, A]
+        HunyuanStorage.lora = lora
+        HunyuanStorage.lora_scale = scale# if lora != "(None)" else 1.0
         return gr.Button.update(value='...', variant='secondary', interactive=False)
 
     with gr.Blocks() as hunyuandit_block:
         with ResizeHandleRow():
             with gr.Column():
                 with gr.Row():
-                    karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas")
-                    distilled = ToolButton(value="\U0001D53B", variant='secondary', tooltip="use distilled model")
-                    v11 = ToolButton(value="1.1", variant='primary', tooltip="use v1.1 model")
+                    model = gr.Dropdown([#'HunyuanDiT-v1.2-Diffusers-Distilled',
+                                         #'HunyuanDiT-v1.2-Diffusers',
+                                         'HunyuanDiT-v1.1-Diffusers-Distilled',
+                                         'HunyuanDiT-v1.1-Diffusers',
+                                         'HunyuanDiT-Diffusers-Distilled',
+                                         'HunyuanDiT-Diffusers',
+                                         ], label='Model', value='HunyuanDiT-v1.1-Diffusers', type='value')
+
                     T5 = ToolButton(value="T5", variant='primary', tooltip="use T5 text encoder")
+                    karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas")
                 with gr.Row():
                     positive_prompt = gr.Textbox(label='Prompt', placeholder='Enter a prompt here...', default='', lines=1.1)
                     scheduler = gr.Dropdown(["DDPM",
@@ -609,6 +734,11 @@ def on_ui_tabs():
                     reuseSeed = ToolButton(value="\u267b\ufe0f")
                     batch_size = gr.Number(label='Batch Size', minimum=1, maximum=9, value=1, precision=0, scale=0)
 
+                with gr.Row(equal_height=True):
+                    lora = gr.Dropdown([x for x in loras], label='LoRA', value="(None)", type='value', multiselect=False, scale=1)
+                    refresh = ToolButton(value='\U0001f504')
+                    scale = gr.Slider(label='LoRA weight', minimum=-1.0, maximum=1.0, value=1.0, step=0.01)
+
                 with gr.Accordion(label='the colour of noise', open=False):
                     with gr.Row():
                         initialNoiseR = gr.Slider(minimum=0, maximum=1.0, value=0.0, step=0.01,  label='red')
@@ -616,23 +746,36 @@ def on_ui_tabs():
                         initialNoiseB = gr.Slider(minimum=0, maximum=1.0, value=0.0, step=0.01,  label='blue')
                         initialNoiseA = gr.Slider(minimum=0, maximum=0.1, value=0.0, step=0.001, label='strength')
 
+                with gr.Accordion(label='ControlNet', open=False, visible=False):
+                    with gr.Row():
+                        CNSource = gr.Image(label='control image', sources=['upload'], type='pil', interactive=True, show_download_button=False)
+                        with gr.Column():
+                            CNMethod = gr.Dropdown(['(None)', 'canny', 'depth', 'pose'], label='method', value='(None)', type='index', multiselect=False, scale=1)
+                            CNStrength = gr.Slider(label='Strength', minimum=0.00, maximum=1.0, step=0.01, value=0.8)
+                            CNStart = gr.Slider(label='Start step', minimum=0.00, maximum=1.0, step=0.01, value=0.0)
+                            CNEnd = gr.Slider(label='End step', minimum=0.00, maximum=1.0, step=0.01, value=0.8)
+
                 with gr.Accordion(label='image to image', open=False):
                     with gr.Row():
                         i2iSource = gr.Image(label='image source', sources=['upload'], type='pil', interactive=True, show_download_button=False)
+                        maskSource = gr.Image(label='source mask', sources=['upload'], type='pil', interactive=True, show_download_button=False)
                         with gr.Column():
-                            i2iDenoise = gr.Slider(label='Denoise', minimum=0.00, maximum=1.0, step=0.01, value=0.5)
+                            with gr.Row():
+                                i2iDenoise = gr.Slider(label='Denoise', minimum=0.00, maximum=1.0, step=0.01, value=0.5)
+                                AS = ToolButton(value='AS')
                             i2iSetWH = gr.Button(value='Set safe Width / Height from image')
                             i2iFromGallery = gr.Button(value='Get image from gallery')
                             with gr.Row():
                                 i2iCaption = gr.Button(value='Caption this image (Florence-2)', scale=9)
                                 toPrompt = ToolButton(value='P', variant='secondary')
+                            maskCut = gr.Slider(label='Ignore Mask after step', minimum=0.00, maximum=1.0, step=0.01, value=1.0)
 
-                ctrls = [positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale, steps, sampling_seed,
-                         batch_size, scheduler, style, i2iSource, i2iDenoise]
+                ctrls = [model, positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale, steps, sampling_seed,
+                         batch_size, scheduler, style, i2iSource, i2iDenoise, maskSource, CNMethod, CNSource, CNStrength, CNStart, CNEnd]
 
             with gr.Column():
                 generate_button = gr.Button(value="Generate", variant='primary', visible=True)
-                output_gallery = gr.Gallery(label='Output', height=shared.opts.gallery_height or None,
+                output_gallery = gr.Gallery(label='Output', height="80vh",
                                             show_label=False, object_fit='contain', visible=True, columns=3, preview=True)
 #   gallery movement buttons don't work, others do
 #   caption not displaying linebreaks, alt text does
@@ -648,10 +791,10 @@ def on_ui_tabs():
                     ))
 
 
+        refresh.click(refreshLoRAs, inputs=[], outputs=[lora])
         karras.click(toggleKarras, inputs=[], outputs=karras)
-        distilled.click(toggleDistilled, inputs=[], outputs=distilled)
-        v11.click(toggleV11, inputs=[], outputs=v11)
         T5.click(toggleT5, inputs=[], outputs=T5)
+        AS.click(toggleAS, inputs=[], outputs=AS)
         swapper.click(fn=None, _js="function(){switchWidthHeight('Hunyuan-DiT')}", inputs=None, outputs=None, show_progress=False)
         random.click(randomSeed, inputs=[], outputs=sampling_seed, show_progress=False)
         reuseSeed.click(reuseLastSeed, inputs=[], outputs=sampling_seed, show_progress=False)
@@ -663,8 +806,8 @@ def on_ui_tabs():
 
         output_gallery.select (fn=getGalleryIndex, inputs=[], outputs=[])
 
-        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA], outputs=[generate_button])
         generate_button.click(predict, inputs=ctrls, outputs=[generate_button, output_gallery])
+        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, lora, scale], outputs=[generate_button])
 
     return [(hunyuandit_block, "Hunyuan-DiT", "hunyuan")]
 
