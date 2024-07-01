@@ -9,7 +9,7 @@ Go to the **Extensions** tab, then **Install from URL**, use the URL for this re
 
 ---
 ### screenshot ###
-almost current UI, imagine a 'D' icon next to the 'K'
+current UI
 
 ![](screenshot.png "UI screenshot")
 
