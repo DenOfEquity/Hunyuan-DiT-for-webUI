@@ -45,7 +45,7 @@ class HunyuanStorage:
     i2iAllSteps = False
     lora = None
     lora_scale = 1.0
-    last_batch = 0
+#    last_batch = 0
 
 ## from huggingace.co/Tencent-Hunyuan/HYDiT-LoRA
 def load_hunyuan_dit_lora(transformer_state_dict, lora_state_dict, lora_scale):
@@ -151,7 +151,6 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
     volatileState = [HunyuanStorage.useT5, HunyuanStorage.karras]
 
     if controlNet != 0 and controlNetImage != None and controlNetStrength > 0.0:
-        controlNetImage = controlNetImage.resize((width, height))
         useControlNet = ['Tencent-Hunyuan/HunyuanDiT-v1.1-ControlNet-Diffusers-Canny', 
                          'Tencent-Hunyuan/HunyuanDiT-v1.1-ControlNet-Diffusers-Depth', 
                          'Tencent-Hunyuan/HunyuanDiT-v1.1-ControlNet-Diffusers-Pose'][controlNet-1]
@@ -164,14 +163,11 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
     if i2iSource != None:
         if HunyuanStorage.i2iAllSteps == True:
             num_steps = int(num_steps / i2iDenoise)
-        i2iSource = i2iSource.resize((width, height))
     else:
         i2iDenoise = 1.0
         maskSource = None
 
-    if maskSource != None:
-        maskSource = maskSource.resize((int(width/8), int(height/8)))
-    else:
+    if maskSource == None:
         maskCutOff = 1.0
 
 
@@ -215,8 +211,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
 
     #first: tokenize and text_encode
     useCachedEmbeds = (HunyuanStorage.lastPrompt == combined_positive and 
-                       HunyuanStorage.lastNegative == combined_negative and
-                       HunyuanStorage.last_batch == num_images)
+                       HunyuanStorage.lastNegative == combined_negative)# and  HunyuanStorage.last_batch == num_images)
     if useCachedEmbeds:
         print ("Skipping text encoders and tokenizers.")
         #   nothing to do
@@ -266,19 +261,21 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
             positive_text_input_ids,
             attention_mask=positive_attention_1,
         )
-        bs_embed, seq_len, _ = prompt_embeds[0].shape
-        positive_embeds_1 = prompt_embeds[0].repeat(1, num_images, 1)
-        positive_embeds_1 = positive_embeds_1.view(bs_embed * num_images, seq_len, -1)
-        positive_attention_1 = positive_attention_1.repeat(num_images, 1)
+#        bs_embed, seq_len, _ = prompt_embeds[0].shape
+#        positive_embeds_1 = prompt_embeds[0].repeat(1, num_images, 1)
+#        positive_embeds_1 = positive_embeds_1.view(bs_embed * num_images, seq_len, -1)
+        positive_embeds_1 = prompt_embeds[0]#.repeat(num_images, 1, 1)
+#        positive_attention_1 = positive_attention_1.repeat(num_images, 1)
 
         prompt_embeds = text_encoder(
             negative_text_input_ids,
             attention_mask=negative_attention_1,
         )
-        seq_len = prompt_embeds[0].shape[1]
-        negative_embeds_1 = prompt_embeds[0].repeat(1, num_images, 1)
-        negative_embeds_1 = negative_embeds_1.view(num_images, seq_len, -1)
-        negative_attention_1 = negative_attention_1.repeat(num_images, 1)
+#        seq_len = prompt_embeds[0].shape[1]
+#        negative_embeds_1 = prompt_embeds[0].repeat(1, num_images, 1)
+#        negative_embeds_1 = negative_embeds_1.view(num_images, seq_len, -1)
+        negative_embeds_1 = prompt_embeds[0]#.repeat(num_images, 1, 1)
+#        negative_attention_1 = negative_attention_1.repeat(num_images, 1)
 
         del text_encoder, prompt_embeds
         #end text_encode 1
@@ -333,28 +330,31 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
                 positive_text_input_ids,
                 attention_mask=positive_attention_2,
             )
-            bs_embed, seq_len, _ = prompt_embeds[0].shape
-            positive_embeds_2 = prompt_embeds[0].repeat(1, num_images, 1)
-            positive_embeds_2 = positive_embeds_2.view(bs_embed * num_images, seq_len, -1)
-            positive_attention_2 = positive_attention_2.repeat(num_images, 1)
+
+#            bs_embed, seq_len, _ = prompt_embeds[0].shape
+#            positive_embeds_2 = prompt_embeds[0].repeat(1, num_images, 1)
+#            positive_embeds_2 = positive_embeds_2.view(bs_embed * num_images, seq_len, -1)
+            positive_embeds_2 = prompt_embeds[0]#.repeat(num_images, 1, 1)
+#            positive_attention_2 = positive_attention_2.repeat(num_images, 1)
 
             prompt_embeds = text_encoder(
                 negative_text_input_ids,
                 attention_mask=negative_attention_2,
             )
-            seq_len = prompt_embeds[0].shape[1]
-            negative_embeds_2 = prompt_embeds[0].repeat(1, num_images, 1)
-            negative_embeds_2 = negative_embeds_2.view(num_images, seq_len, -1)
-            negative_attention_2 = negative_attention_2.repeat(num_images, 1)
+#            seq_len = prompt_embeds[0].shape[1]
+#            negative_embeds_2 = prompt_embeds[0].repeat(1, num_images, 1)
+#            negative_embeds_2 = negative_embeds_2.view(num_images, seq_len, -1)
+            negative_embeds_2 = prompt_embeds[0]#.repeat(num_images, 1, 1)
+#            negative_attention_2 = negative_attention_2.repeat(num_images, 1)
 
             del text_encoder, prompt_embeds
             #end text_encode 2
         else:
             #256 is tokenizer max length from config; 2048 is transformer joint_attention_dim from its config
-            positive_embeds_2    = torch.zeros((num_images, 256, 2048))
-            positive_attention_2 = torch.zeros((num_images, 256))
-            negative_embeds_2    = torch.zeros((num_images, 256, 2048))
-            negative_attention_2 = torch.zeros((num_images, 256))
+            positive_embeds_2    = torch.zeros((1, 256, 2048))
+            positive_attention_2 = torch.zeros((1, 256))
+            negative_embeds_2    = torch.zeros((1, 256, 2048))
+            negative_attention_2 = torch.zeros((1, 256))
 
         HunyuanStorage.positive_embeds_1    = positive_embeds_1.to('cpu')
         HunyuanStorage.positive_attention_1 = positive_attention_1.to('cpu')
@@ -370,7 +370,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
 
         HunyuanStorage.lastPrompt = combined_positive
         HunyuanStorage.lastNegative = combined_negative
-        HunyuanStorage.last_batch = num_images
+#        HunyuanStorage.last_batch = num_images
 
     gc.collect()
     torch.cuda.empty_cache()
@@ -443,8 +443,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
         del imageR, imageG, imageB, image, image_latents
     #   end: colour the initial noise
 
-#   load in LoRA
-
+    #   load LoRA
     if HunyuanStorage.lora and HunyuanStorage.lora != "(None)" and HunyuanStorage.lora_scale != 0.0:
         lorafile = ".//models/diffusers//HunyuanLora//" + HunyuanStorage.lora + ".safetensors"
 
@@ -470,6 +469,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
                 print ("Failed: LoRA: " + lorafile)
                 return gr.Button.update(value='Generate', variant='primary', interactive=True), None
         del lora_state_dict
+    #   end: load LoRA
    
     if scheduler == 'DDPM':
         pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
@@ -496,8 +496,12 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
     if hasattr(pipe.scheduler.config, 'use_karras_sigmas'):
         pipe.scheduler.config.use_karras_sigmas = HunyuanStorage.karras
 
-##    pipe.scheduler.beta_schedule  = beta_schedule
-##    pipe.scheduler.use_lu_lambdas = use_lu_lambdas
+    if hasattr(pipe.scheduler.config, 'timestep_spacing'):
+        pipe.scheduler.config.timestep_spacing = "trailing"
+
+#    if hasattr(pipe.scheduler.config, 'rescale_betas_zero_snr'):
+#        pipe.scheduler.config.rescale_betas_zero_snr = True
+
     pipe.transformer.to(memory_format=torch.channels_last)
     pipe.vae.to(memory_format=torch.channels_last)
 
@@ -709,8 +713,6 @@ def on_ui_tabs():
                                              "DPM++ 2M SDE",
                                              "DPM",
                                              "DPM SDE",
-                                             "Euler",
-                                             "Euler A",
                                              "SA-solver",
                                              "UniPC",
                                              ],
@@ -776,7 +778,7 @@ def on_ui_tabs():
             with gr.Column():
                 generate_button = gr.Button(value="Generate", variant='primary', visible=True)
                 output_gallery = gr.Gallery(label='Output', height="80vh",
-                                            show_label=False, object_fit='contain', visible=True, columns=3, preview=True)
+                                            show_label=False, visible=True, object_fit='none', columns=3, preview=True)
 #   gallery movement buttons don't work, others do
 #   caption not displaying linebreaks, alt text does
 

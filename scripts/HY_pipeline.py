@@ -366,6 +366,16 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
             logger.warning(f"Reshaped to (height, width)=({height}, {width}), Supported shapes are {SUPPORTED_SHAPE}")
             
             
+        # 0.01 repeat prompt embeds to match num_images_per_prompt
+        prompt_embeds = prompt_embeds.repeat(num_images_per_prompt, 1, 1)
+        prompt_embeds_2 = prompt_embeds_2.repeat(num_images_per_prompt, 1, 1)
+        negative_prompt_embeds = negative_prompt_embeds.repeat(num_images_per_prompt, 1, 1)
+        negative_prompt_embeds_2 = negative_prompt_embeds_2.repeat(num_images_per_prompt, 1, 1)
+
+        prompt_attention_mask = prompt_attention_mask.repeat(num_images_per_prompt, 1)
+        prompt_attention_mask_2 = prompt_attention_mask_2.repeat(num_images_per_prompt, 1)
+        negative_prompt_attention_mask = negative_prompt_attention_mask.repeat(num_images_per_prompt, 1)
+        negative_prompt_attention_mask_2 = negative_prompt_attention_mask_2.repeat(num_images_per_prompt, 1)
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
@@ -422,18 +432,20 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
             latent_timestep = timesteps[:1].repeat(num_images_per_prompt)
 
             # 3. Preprocess image
-            image = self.image_processor.preprocess(image).to('cuda').to(torch.float16)
+            image = self.image_processor.preprocess(image, height=height, width=width).to('cuda').to(torch.float16)
             image_latents = self.vae.encode(image).latent_dist.sample(generator) * self.vae.config.scaling_factor * self.scheduler.init_noise_sigma
             image_latents = image_latents.repeat(num_images_per_prompt, 1, 1, 1)
 
             # add noise to image latents
             if strength < 1.0:
-                latents = torch.lerp (image_latents, noise, float(timesteps[0]/1000.0))
+                ts = torch.tensor([timesteps[0]], device='cuda')
+                ts = ts[:1].repeat(num_images_per_prompt)
+                latents = self.scheduler.add_noise(image_latents, noise, ts)
 
             if mask_image is not None:
                 # 5.1. Prepare masked latent variables
                 #### mask_image already resized /8 at start of predict()
-                mask = self.mask_processor.preprocess(mask_image).to(device='cuda', dtype=torch.float16)
+                mask = self.mask_processor.preprocess(mask_image, height=height//8, width=width//8).to(device='cuda', dtype=torch.float16)
                
         else:
             timesteps = self.scheduler.timesteps
@@ -479,9 +491,11 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
                 if self.interrupt:
                     continue
 
-                if doDiffDiff and float((i+1) / self._num_timesteps) <= self._mask_cutoff:# and i > 0 :
+                if doDiffDiff and float((i+1) / self._num_timesteps) <= self._mask_cutoff:
                     tmask = (mask >= float((i+1) / self._num_timesteps)).repeat(num_images_per_prompt, 1, 1, 1)
-                    init_latents_proper = torch.lerp (image_latents, noise, float(t/1000.0))
+                    ts = torch.tensor([t], device='cuda')
+                    ts = ts[:1].repeat(num_images_per_prompt)
+                    init_latents_proper = self.scheduler.add_noise(image_latents, noise, ts)
                     latents = (init_latents_proper * ~tmask) + (latents * tmask)
 
                 # expand the latents if we are doing classifier free guidance

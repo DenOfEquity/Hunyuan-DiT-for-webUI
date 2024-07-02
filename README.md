@@ -24,6 +24,11 @@ diffusers>=0.28.1
 ```
 
 ---
+#### 02/07/2024 ####
+* cleaner handling for batch after understanding the code a bit better - why repeat over the second dimension, then take use a view to get the right shape, when it is easier to just repeat over the first dimension? Other diffusers pipelines do it too.
+* fixed image to image: changed method of added noise when I added masking, which was an error.
+* removed **Euler** and **Euler A** samplers as they seem very bad.
+
 #### 01/07/2024 ####
 * fix for batch, tested with diffusers versions 0.29.1 and 0.29.2. On my low-end hardware, this takes *n* times longer to generate, up to the point where it starts hitting shared memory, then it gets *really* slow.
 * model selection now via dropdown, in preparation for v1.2 (not much information yet, needs a code update, so still have v1.1 as default)
