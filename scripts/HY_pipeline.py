@@ -178,7 +178,7 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
         )
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
         self.mask_processor  = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor, vae_latent_channels=self.vae.config.latent_channels, 
-                                                 do_normalize=False, do_binarize=False, do_convert_grayscale=True)
+                                                 do_resize=False, do_normalize=False, do_binarize=False, do_convert_grayscale=True)
         self.default_sample_size = (
             self.transformer.config.sample_size
             if hasattr(self, "transformer") and self.transformer is not None
@@ -445,7 +445,7 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
             if mask_image is not None:
                 # 5.1. Prepare masked latent variables
                 #### mask_image already resized /8 at start of predict()
-                mask = self.mask_processor.preprocess(mask_image, height=height//8, width=width//8).to(device='cuda', dtype=torch.float16)
+                mask = self.mask_processor.preprocess(mask_image.resize((width//8, height//8))).to(device='cuda', dtype=torch.float16)
                
         else:
             timesteps = self.scheduler.timesteps
