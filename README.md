@@ -24,9 +24,14 @@ diffusers>=0.28.1
 ```
 
 ---
+#### 15/07 ####
+minor update to fix mask - previously the converter function would 'helpfully' resize it to a multiple of 8, which means it would fail when generating images with dimensions not a multiple of 64.
+
+still waiting on diffusers release to support v1.2 and controlnet
+
 #### 02/07/2024 ####
 * cleaner handling for batch after understanding the code a bit better - why repeat over the second dimension, then take use a view to get the right shape, when it is easier to just repeat over the first dimension? Other diffusers pipelines do it too.
-* fixed image to image: changed method of added noise when I added masking, which was an error.
+* fixed image to image: changed method of adding noise when I added masking, which was an error.
 * removed **Euler** and **Euler A** samplers as they seem very bad.
 
 #### 01/07/2024 ####
