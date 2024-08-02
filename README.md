@@ -16,11 +16,11 @@ current UI
 
 ---
 ### downloads models on first run - ~13.4GB (optionally +5.6GB for variants) ###
-### needs *diffusers 0.28.1* or newer ###
+### needs *diffusers 0.29.2* or newer ###
 
 Easiest way to ensure necessary diffusers release is installed is to edit **requirements_versions.txt** in the webUI folder.
 ```
-diffusers>=0.28.1
+diffusers>=0.29.2
 ```
 
 ---
