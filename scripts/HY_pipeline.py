@@ -26,7 +26,7 @@ from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
 from diffusers.models import AutoencoderKL, HunyuanDiT2DModel
 from diffusers.loaders import SD3LoraLoaderMixin
 
-#from diffusers.models.controlnet_hunyuan import HunyuanDiT2DControlNetModel#, HunyuanDiT2DMultiControlNetModel
+from diffusers.models import HunyuanDiT2DControlNetModel#, HunyuanDiT2DMultiControlNetModel
 
 from diffusers.models.embeddings import get_2d_rotary_pos_embed
 from diffusers.schedulers import DDPMScheduler
@@ -149,12 +149,7 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
         transformer: HunyuanDiT2DModel,
         scheduler: DDPMScheduler,
         feature_extractor: CLIPImageProcessor,
-        # controlnet: Union[
-            # HunyuanDiT2DControlNetModel,
-            # List[HunyuanDiT2DControlNetModel],
-            # Tuple[HunyuanDiT2DControlNetModel],
-            # HunyuanDiT2DMultiControlNetModel,
-        # ],
+        controlnet: HunyuanDiT2DControlNetModel,
         text_encoder_2=T5EncoderModel,
         tokenizer_2=MT5Tokenizer,
     ):
@@ -169,9 +164,8 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
             scheduler=scheduler,
             feature_extractor=feature_extractor,
             text_encoder_2=text_encoder_2,
-#            controlnet=controlnet,
+            controlnet=controlnet,
         )
-        self.controlnet = None
 
         self.vae_scale_factor = (
             2 ** (len(self.vae.config.block_out_channels) - 1) if hasattr(self, "vae") and self.vae is not None else 8
@@ -242,42 +236,6 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
 
         return timesteps, num_inference_steps - t_start
 
-
-    # controlnet
-    def prepare_image(
-        self,
-        image,
-        width,
-        height,
-        batch_size,
-        num_images_per_prompt,
-        device,
-        dtype,
-        do_classifier_free_guidance=False,
-        guess_mode=False,
-    ):
-        if isinstance(image, torch.Tensor):
-            pass
-        else:
-            image = self.image_processor.preprocess(image, height=height, width=width)
-
-        image_batch_size = image.shape[0]
-
-        if image_batch_size == 1:
-            repeat_by = batch_size
-        else:
-            # image batch size is the same as prompt batch size
-            repeat_by = num_images_per_prompt
-
-        image = image.repeat_interleave(repeat_by, dim=0)
-
-        image = image.to(device=device, dtype=dtype)
-
-        if do_classifier_free_guidance and not guess_mode:
-            image = torch.cat([image] * 2)
-
-        return image
-
     @property
     def guidance_scale(self):
         return self._guidance_scale
@@ -309,12 +267,17 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
     def __call__(
         self,
         image: PipelineImageInput = None,
-        mask_image: PipelineImageInput = None,
         strength: float = 0.6,
+        mask_image: PipelineImageInput = None,
+        mask_cutoff: float = 1.0,
+
         height: Optional[int] = None,
         width: Optional[int] = None,
         num_inference_steps: Optional[int] = 50,
         guidance_scale: Optional[float] = 5.0,
+        guidance_rescale: float = 0.0,
+        guidance_cutoff: float = 1.0,
+
         num_images_per_prompt: Optional[int] = 1,
         eta: Optional[float] = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -332,7 +295,6 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
-        guidance_rescale: float = 0.0,
         original_size: Optional[Tuple[int, int]] = (1024, 1024),
         target_size: Optional[Tuple[int, int]] = None,
         crops_coords_top_left: Tuple[int, int] = (0, 0),
@@ -343,13 +305,13 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
         control_image: PipelineImageInput = None,
         controlnet_conditioning_scale: Union[float, List[float]] = 1.0,
 
-        mask_cutoff: float = 1.0,
 
+        centre_latents: Optional[bool] = False,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
 
     ):
         doDiffDiff = True if (image and mask_image) else False
-
+        
         if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
             callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
 
@@ -393,7 +355,6 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
         )
         self._guidance_scale = guidance_scale
         self._guidance_rescale = guidance_rescale
-        self._mask_cutoff = mask_cutoff
         self._interrupt = False
         self._cross_attention_kwargs = cross_attention_kwargs
 
@@ -402,22 +363,18 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
         device = self._execution_device
 
         # prepare controlnet image
-        if self.controlnet != None:
+        if self.controlnet != None and control_image != None:
             if isinstance(self.controlnet, HunyuanDiT2DControlNetModel):
-                control_image = self.prepare_image(
-                    image=control_image,
-                    width=width,
-                    height=height,
-                    batch_size=num_images_per_prompt,
-                    num_images_per_prompt=num_images_per_prompt,
-                    device=device,
-                    dtype=self.dtype,
-                    do_classifier_free_guidance=self.do_classifier_free_guidance,
-                    guess_mode=False,
-                )
+                control_image = self.image_processor.preprocess(control_image, height=height, width=width).to('cuda').to(torch.float16)
 
                 control_image = self.vae.encode(control_image).latent_dist.sample()
                 control_image = control_image * self.vae.config.scaling_factor
+
+                control_image = control_image.repeat_interleave(num_images_per_prompt, dim=0)   #repeat interleave handles multiple control images
+
+                if self.do_classifier_free_guidance:
+                    control_image = torch.cat([control_image] * 2)
+
 
         self.scheduler.set_timesteps(num_inference_steps, device=device)
 
@@ -426,14 +383,14 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
 
         if image is not None:
             noise = latents
-            # 4. Prepare timesteps
 
+            # 4. Prepare timesteps
             timesteps, num_inference_steps = self.get_timesteps(num_inference_steps, strength, device)
-            latent_timestep = timesteps[:1].repeat(num_images_per_prompt)
 
             # 3. Preprocess image
             image = self.image_processor.preprocess(image, height=height, width=width).to('cuda').to(torch.float16)
-            image_latents = self.vae.encode(image).latent_dist.sample(generator) * self.vae.config.scaling_factor * self.scheduler.init_noise_sigma
+            image_latents = self.vae.encode(image).latent_dist.sample(generator)
+            image_latents *= self.vae.config.scaling_factor * self.scheduler.init_noise_sigma
             image_latents = image_latents.repeat(num_images_per_prompt, 1, 1, 1)
 
             # add noise to image latents
@@ -444,7 +401,6 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
 
             if mask_image is not None:
                 # 5.1. Prepare masked latent variables
-                #### mask_image already resized /8 at start of predict()
                 mask = self.mask_processor.preprocess(mask_image.resize((width//8, height//8))).to(device='cuda', dtype=torch.float16)
                
         else:
@@ -462,11 +418,11 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
             self.transformer.inner_dim // self.transformer.num_heads, grid_crops_coords, (grid_height, grid_width)
         )
 
-        style = torch.tensor([0], device=device)
+        style = torch.tensor([0], device='cuda')
 
         target_size = target_size or (height, width)
         add_time_ids = list(original_size + target_size + crops_coords_top_left)
-        add_time_ids = torch.tensor([add_time_ids], dtype=prompt_embeds.dtype)
+        add_time_ids = torch.tensor([add_time_ids], dtype=prompt_embeds.dtype, device='cuda')
 
         if self.do_classifier_free_guidance:
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
@@ -491,12 +447,24 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
                 if self.interrupt:
                     continue
 
-                if doDiffDiff and float((i+1) / self._num_timesteps) <= self._mask_cutoff:
-                    tmask = (mask >= float((i+1) / self._num_timesteps)).repeat(num_images_per_prompt, 1, 1, 1)
+                if doDiffDiff and float((i+1) / self._num_timesteps) <= mask_cutoff:
+                    tmask = (mask >= float((i+1) / self._num_timesteps))
                     ts = torch.tensor([t], device='cuda')
                     ts = ts[:1].repeat(num_images_per_prompt)
                     init_latents_proper = self.scheduler.add_noise(image_latents, noise, ts)
                     latents = (init_latents_proper * ~tmask) + (latents * tmask)
+
+                if float((i+1) / len(timesteps)) > guidance_cutoff and self._guidance_scale != 1.0:
+                    self._guidance_scale = 1.0
+                    prompt_embeds = prompt_embeds[num_images_per_prompt:]#.unsqueeze(0)
+                    prompt_attention_mask = prompt_attention_mask[num_images_per_prompt:]
+                    prompt_embeds_2 = prompt_embeds_2[num_images_per_prompt:]
+                    prompt_attention_mask_2 = prompt_attention_mask_2[num_images_per_prompt:]
+                    add_time_ids = add_time_ids[num_images_per_prompt:]
+                    style = style[num_images_per_prompt:]
+
+                    if self.controlnet != None:
+                        control_image = control_image[num_images_per_prompt:]
 
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
@@ -539,23 +507,28 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
                     image_rotary_emb=image_rotary_emb,
                     return_dict=False,
 #                    cross_attention_kwargs=self.cross_attention_kwargs,
-#                    controlnet_block_samples=control_block_samples,
+                    controlnet_block_samples=control_block_samples,
                 )[0]
 
 
                 noise_pred, _ = noise_pred.chunk(2, dim=1)
-
                 # perform guidance
                 if self.do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-                if self.do_classifier_free_guidance and guidance_rescale > 0.0:
-                    # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-                    noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
+                    if guidance_rescale > 0.0:
+                        # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+                        noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+
+#   might have value as a option
+                if centre_latents == True:
+                    for b in range(len(latents)):
+                        for c in range(4):
+                            latents[b][c] -= latents[b][c].mean()
+
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
@@ -577,14 +550,11 @@ class HunyuanDiTPipeline_DoE_combined(DiffusionPipeline, SD3LoraLoaderMixin):
                 if XLA_AVAILABLE:
                     xm.mark_step()
 
-        if output_type == "latent":
-            image = latents
-        else:
-            image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False)[0]
-            do_denormalize = [True] * image.shape[0]
-            image = self.image_processor.postprocess(image, output_type=output_type, do_denormalize=do_denormalize)
+        if doDiffDiff and 1.0 <= mask_cutoff:
+            tmask = (mask >= 1.0)
+            latents = (image_latents * ~tmask) + (latents * tmask)
 
         # Offload all models
         self.maybe_free_model_hooks()
 
-        return (image)
+        return latents
