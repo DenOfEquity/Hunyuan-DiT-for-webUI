@@ -1,37 +1,73 @@
 ## Hunyuan-DiT for webui ##
 ### Forge tested, probably A1111 too ###
 I don't think there is anything Forge specific here.
-### works for me <sup>TM</sup> on 8Gb VRAM, 16Gb RAM (GTX1070) ###
+### works for me <sup>TM</sup> on 8GB VRAM, 16GB RAM (GTX1070) ###
 
 ---
 ## Install ##
 Go to the **Extensions** tab, then **Install from URL**, use the URL for this repository.
+>[!IMPORTANT]
+> needs *diffusers 0.30.0* or newer
+
+Easiest way to ensure suitably up-to-date diffusers is installed is to edit **requirements_versions.txt** in the webUI folder.
+```
+diffusers>=0.30.0
+```
+You might also need to update:
+```
+tokenizers>=0.19
+transformers>=4.40
+huggingface-hub>=0.23.4
+```
+(these are the versions I have installed)
 
 ---
 ### screenshot ###
-current UI
+not current UI, but similar
 
 ![](screenshot.png "UI screenshot")
 
 
 ---
 ### downloads models on first run - ~13.4GB (optionally +5.6GB for variants) ###
-### needs *diffusers 0.29.2* or newer ###
 
-Easiest way to ensure necessary diffusers release is installed is to edit **requirements_versions.txt** in the webUI folder.
-```
-diffusers>=0.29.2
-```
 
 ---
-#### 15/07 ####
-minor update to fix mask - previously the converter function would 'helpfully' resize it to a multiple of 8, which means it would fail when generating images with dimensions not a multiple of 64.
+<details>
+<summary>Change log</summary>
+#### 07/08/2024 ####
+* diffusers 0.30.0 finally released, so now we have:
+	* v1.2 of HunyuanDiT (distilled variant as default)
+	* controlnet - will fit into 8GB VRAM (actually ~7GB), but you'd best not be doing much else at the same time. If inference becomes very slow or fails, you've run out of VRAM. Control images must be preprocessed, you can use controlnet in the main txt2img tab for this.
+	* whatever else I added/fixed/broke in the meantime
 
-still waiting on diffusers release to support v1.2 and controlnet
+#### 27/07/2024 ####
+* added drawing of masks for image to image. Load/copy the source image into the mask, to use as a template.
+* added option to keep models loaded
+
+#### 24/07/2024 ####
+* added SuperPrompt button (ꌗ) to rewrite simple prompts with more detail. This **overwrites** the prompt. Read about SuperPrompt [here](https://brianfitzgerald.xyz/prompt-augmentation). Credit to BrianFitzgerald for the model. (all my alternate model extensions are updated to use this; the model is loaded to a shared location so there's no wasted memory due to duplicates.)
+
+#### 10/07/2024 ####
+* improved yesterday's effort. More compatibility, multi-line, etc.
+
+#### 09/07/2024 ####
+* some code cleanups
+* added prompt parsing to automatically fill in details like seed, steps, etc.
+
+#### 05/07/2024 ####
+* added guidance cut off control: switch to CFG 1.0 after some steps for faster generation. The earlier the switch, the more effect on quality. A late switch might not hurt quality at all.
+
+#### 04/07/2024 ####
+* added toggle button to center the latents during inference. This is something that can be very effective with sd1.5 and sdXL (but not sd3). Tends to change the results significantly with HYdit, but doesn't break them, so it's included for experimentation.
+
+#### 03/07/2024 ####
+* added quickset for image resolution, included sizes are the recommended ones (and would be enforced if resolution binning were enabled, which it isn't).
+* tweaked Florence-2: model now runs on GPU so is faster.
 
 #### 02/07/2024 ####
 * cleaner handling for batch after understanding the code a bit better - why repeat over the second dimension, then take use a view to get the right shape, when it is easier to just repeat over the first dimension? Other diffusers pipelines do it too.
-* fixed image to image: changed method of adding noise when I added masking, which was an error.
+* fixed image to image: changed method of added noise when I added masking, which was an error.
 * removed **Euler** and **Euler A** samplers as they seem very bad.
 
 #### 01/07/2024 ####
@@ -74,6 +110,7 @@ still waiting on diffusers release to support v1.2 and controlnet
 
 #### 04/06/2024 ####
 Initial release, dips into shared memory too easily. K icon (top-right of left column) toggles use of Karras sigmas for the samplers. Seemed useful with PixArt + Cascade, so why not here?
+</details>
 
 ---
 ### image2image progression with a nice denoise ###
