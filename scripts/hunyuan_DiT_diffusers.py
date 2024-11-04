@@ -1,9 +1,13 @@
 ####    TODO:
 ##      PAG ?
 
+from diffusers.utils import check_min_version
+check_min_version("0.30.0")
+
 
 class HunyuanStorage:
     ModuleReload = False
+    usingGradio4 = False
     lastSeed = -1
     galleryIndex = 0
     lastPrompt = None
@@ -32,6 +36,8 @@ class HunyuanStorage:
 
 import gc
 import gradio
+if int(gradio.__version__[0]) == 4:
+    HunyuanStorage.usingGradio4 = True
 import math
 import numpy
 import os
@@ -141,7 +147,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
             controlNet, controlNetImage, controlNetStrength, controlNetStart, controlNetEnd, 
             *args):
 
-    logging.set_verbosity(logging.ERROR)    #   minor issue in config.json causes console spam, and LoRAs
+    logging.set_verbosity(logging.ERROR)    #   minor issue in config.json causes console spam, and LoRAs, and general transformers/diffusers spam
 
     torch.set_grad_enabled(False)
 
@@ -170,9 +176,11 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
             maskBlur = 0
             maskCutOff = 1.0
         case 1:     #   'image'
-            maskSource = maskSource['image']
+            maskSource = maskSource['background'] if HunyuanStorage.usingGradio4 else maskSource['image']
         case 2:     #   'drawn'
-            maskSource = maskSource['mask']
+            maskSource = maskSource['layers'][0] if HunyuanStorage.usingGradio4 else maskSource['mask']
+        case 3:     #   'composite'
+            maskSource = maskSource['composite'] if HunyuanStorage.usingGradio4 else maskSource['image']
         case _:
             maskSource = None
             maskBlur = 0
@@ -375,17 +383,18 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
         )
 
     ####    transformer
-    source = "Tencent-Hunyuan/" + model
-    if HunyuanStorage.lastTR != source:
+    if HunyuanStorage.lastTR != model:
         print ("Hunyuan: loading transformer ...", end="\r", flush=True)
+        source = "Tencent-Hunyuan/" + model
         HunyuanStorage.pipe.transformer = HunyuanDiT2DModel.from_pretrained(
             source,
             local_files_only=False, cache_dir=".//models//diffusers//",
             subfolder='transformer',
             torch_dtype=torch.float16,
         )
-        HunyuanStorage.lastTR = source
+        HunyuanStorage.lastTR = model
 
+    ####    controlnet
     if HunyuanStorage.lastControlNet != useControlNet and useControlNet:
         HunyuanStorage.pipe.controlnet=HunyuanDiT2DControlNetModel.from_pretrained(
             useControlNet, cache_dir=".//models//diffusers//", 
@@ -656,9 +665,6 @@ def on_ui_tabs():
     def reuseLastSeed ():
         return HunyuanStorage.lastSeed + HunyuanStorage.galleryIndex
         
-    def randomSeed ():
-        return -1
-
     def i2iSetDimensions (image, w, h):
         if image is not None:
             w = 32 * (image.size[0] // 32)
@@ -667,8 +673,12 @@ def on_ui_tabs():
 
     def i2iImageFromGallery (gallery):
         try:
-            newImage = gallery[HunyuanStorage.galleryIndex][0]['name'].split('?')
-            return newImage[0]
+            if HunyuanStorage.usingGradio4:
+                newImage = gallery[HunyuanStorage.galleryIndex][0]
+                return newImage
+            else:
+                newImage = gallery[HunyuanStorage.galleryIndex][0]['name'].rsplit('?', 1)[0]
+                return newImage
         except:
             return None
 
@@ -878,8 +888,8 @@ def on_ui_tabs():
                     match pairs[0]:
                         case "Size:":
                             size = pairs[1].split('x')
-                            width = int(size[0])
-                            height = int(size[1])
+                            width = 32 * ((int(size[0]) + 16) // 32)
+                            height = 32 * ((int(size[1]) + 16) // 32)
                         case "Seed:":
                             seed = int(pairs[1])
                         case "Sampler:":
@@ -903,10 +913,12 @@ def on_ui_tabs():
                             if len(pairs) == 4:
                                 CFGrescale = float(pairs[2].strip('\(\)'))
                                 CFGcutoff = float(pairs[3].strip('\[\]'))
+                            elif len(pairs) == 3:
+                                guidance_rescale = float(pairs[2].strip('\(\)'))
                         case "width:":
-                            width = float(pairs[1])
+                            width = 32 * ((int(pairs[1]) + 16) // 32)
                         case "height:":
-                            height = float(pairs[1])
+                            height = 32 * ((int(pairs[1]) + 16) // 32)
                         case "LoRA:":
                             if len(pairs) == 3:
                                 loraName = pairs[1]
@@ -961,7 +973,7 @@ def on_ui_tabs():
                     CL = ToolButton(value='\u29BE', variant='secondary', tooltip='centre latents to mean')
                     zsnr = ToolButton(value='zsnr', variant='secondary', tooltip='zero SNR')
                 with gradio.Row():
-                    positive_prompt = gradio.Textbox(label='Prompt', placeholder='Enter a prompt here...', default='', lines=1.01)
+                    positive_prompt = gradio.Textbox(label='Prompt', placeholder='Enter a prompt here...', lines=1.01)
                     scheduler = gradio.Dropdown(schedulerList,
                         label='Sampler', value="SA-solver", type='value', scale=0)
 
@@ -978,7 +990,7 @@ def on_ui_tabs():
                 with gradio.Row():
                     guidance_scale = gradio.Slider(label='CFG', minimum=1, maximum=16, step=0.1, value=4)
                     guidance_rescale = gradio.Slider(label='rescale CFG', minimum=0, maximum=1, step=0.01, value=0)
-                    CFGcutoff = gradio.Slider(label='CFG cutoff after step', minimum=0.00, maximum=1.0, step=0.01, value=1.0, precision=0.01, scale=1)
+                    CFGcutoff = gradio.Slider(label='CFG cutoff after step', minimum=0.00, maximum=1.0, step=0.01, value=1.0, scale=1)
                 with gradio.Row():
                     steps = gradio.Slider(label='Steps', minimum=1, maximum=80, step=1, value=20, scale=2)
                     sampling_seed = gradio.Number(label='Seed', value=-1, precision=0, scale=0)
@@ -1011,7 +1023,10 @@ def on_ui_tabs():
                 with gradio.Accordion(label='image to image', open=False):
                     with gradio.Row():
                         i2iSource = gradio.Image(label='image to image source', sources=['upload'], type='pil', interactive=True, show_download_button=False)
-                        maskSource = gradio.Image(label='source mask', sources=['upload'], type='pil', interactive=True, show_download_button=False, tool='sketch', image_mode='RGB', brush_color='#F0F0F0')#opts.img2img_inpaint_mask_brush_color)
+                        if HunyuanStorage.usingGradio4:
+                            maskSource = gradio.ImageMask(label='mask source', sources=['upload'], type='pil', interactive=True, show_download_button=False, layers=False, brush=gradio.Brush(colors=["#F0F0F0"], default_color="#F0F0F0", color_mode='fixed'))
+                        else:
+                            maskSource = gradio.Image(label='mask source', sources=['upload'], type='pil', interactive=True, show_download_button=False, tool='sketch', image_mode='RGB', brush_color='#F0F0F0')#opts.img2img_inpaint_mask_brush_color)
                     with gradio.Row():
                         with gradio.Column():
                             with gradio.Row():
@@ -1025,7 +1040,7 @@ def on_ui_tabs():
                                 toPrompt = ToolButton(value='P', variant='secondary')
 
                         with gradio.Column():
-                            maskType = gradio.Dropdown(['none', 'image', 'drawn'], value='none', label='Mask', type='index')
+                            maskType = gradio.Dropdown(['none', 'image', 'drawn', 'composite'], value='none', label='Mask', type='index')
                             maskBlur = gradio.Slider(label='Blur mask radius', minimum=0, maximum=25, step=1, value=0)
                             maskCut = gradio.Slider(label='Ignore Mask after step', minimum=0.00, maximum=1.0, step=0.01, value=1.0)
                             maskCopy = gradio.Button(value='use i2i source as template')
@@ -1040,7 +1055,7 @@ def on_ui_tabs():
 
             with gradio.Column():
                 generate_button = gradio.Button(value="Generate", variant='primary', visible=True)
-                output_gallery = gradio.Gallery(label='Output', height="80vh",
+                output_gallery = gradio.Gallery(label='Output', height="80vh", type='pil', interactive=False, 
                                             show_label=False, visible=True, object_fit='none', columns=1, preview=True)
 #   gallery movement buttons don't work, others do
 #   caption not displaying linebreaks, alt text does
@@ -1070,8 +1085,8 @@ def on_ui_tabs():
         AS.click(toggleAS, inputs=[], outputs=AS)
         CL.click(toggleCL, inputs=[], outputs=CL)
         zsnr.click(toggleZSNR, inputs=[], outputs=zsnr)
-        swapper.click(fn=None, _js="function(){switchWidthHeight('Hunyuan-DiT')}", inputs=None, outputs=None, show_progress=False)
-        random.click(randomSeed, inputs=[], outputs=sampling_seed, show_progress=False)
+        swapper.click(lambda w, h: (h, w), inputs=[width, height], outputs=[width, height], show_progress=False)
+        random.click(lambda : -1, inputs=[], outputs=sampling_seed, show_progress=False)
         reuseSeed.click(reuseLastSeed, inputs=[], outputs=sampling_seed, show_progress=False)
 
         i2iSetWH.click (fn=i2iSetDimensions, inputs=[i2iSource, width, height], outputs=[width, height], show_progress=False)
@@ -1081,10 +1096,10 @@ def on_ui_tabs():
 
         output_gallery.select (fn=getGalleryIndex, inputs=[], outputs=[])
 
-        generate_button.click(predict, inputs=ctrls, outputs=[generate_button, SP, output_gallery])
+        generate_button.click(predict, inputs=ctrls, outputs=[generate_button, SP, output_gallery]).then(fn=lambda: gradio.update(value='Generate', variant='primary', interactive=True), inputs=None, outputs=generate_button)
         generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, lora, scale], outputs=[generate_button, SP])
 
-    return [(hunyuandit_block, "Hunyuan-DiT", "hunyuan")]
+    return [(hunyuandit_block, "Hunyuan-DiT", "hunyuan_DoE")]
 
 script_callbacks.on_ui_tabs(on_ui_tabs)
 

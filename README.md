@@ -19,7 +19,8 @@ tokenizers>=0.19
 transformers>=4.40
 huggingface-hub>=0.23.4
 ```
-(these are the versions I have installed)
+
+Forge2 already has newer versions for all.
 
 ---
 ### screenshot ###
@@ -35,6 +36,10 @@ not current UI, but similar
 ---
 <details>
 <summary>Change log</summary>
+
+#### ??/08/2024 ####
+* adjustments for Gradio4
+
 #### 07/08/2024 ####
 * diffusers 0.30.0 finally released, so now we have:
 	* v1.2 of HunyuanDiT (distilled variant as default)
