@@ -226,7 +226,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
         #   tokenize 1
         tokenizer = BertTokenizer.from_pretrained(
             "Tencent-Hunyuan/HunyuanDiT-Diffusers",
-            local_files_only=False, cache_dir=".//models//diffusers//",
+            local_files_only=False,
             subfolder='tokenizer',
             torch_dtype=torch.float16,
             )
@@ -250,7 +250,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
         if HunyuanStorage.teCLIP == None:
             HunyuanStorage.teCLIP = BertModel.from_pretrained(
                 "Tencent-Hunyuan/HunyuanDiT-Diffusers",
-                local_files_only=False, cache_dir=".//models//diffusers//",
+                local_files_only=False,
                 subfolder='text_encoder',
                 torch_dtype=torch.float16,
                 ).to('cuda')
@@ -274,7 +274,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
             #   tokenize 2
             tokenizer = MT5Tokenizer.from_pretrained(
                 "Tencent-Hunyuan/HunyuanDiT-Diffusers",
-                local_files_only=False, cache_dir=".//models//diffusers//",
+                local_files_only=False,
                 subfolder='tokenizer_2',
                 torch_dtype=torch.float16,
                 )
@@ -314,7 +314,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
                 print ("Hunyuan: loading T5 ...", end="\r", flush=True)
                 HunyuanStorage.teT5 = T5EncoderModel.from_pretrained(
                     "Tencent-Hunyuan/HunyuanDiT-Diffusers",
-                    local_files_only=False, cache_dir=".//models//diffusers//",
+                    local_files_only=False,
                     subfolder='text_encoder_2',
                     torch_dtype=torch.float16,
                     device_map=device_map,
@@ -370,7 +370,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
     if HunyuanStorage.pipe == None:
         HunyuanStorage.pipe = pipeline.HunyuanDiTPipeline_DoE_combined.from_pretrained(
             "Tencent-Hunyuan/HunyuanDiT-Diffusers",
-            local_files_only=False, cache_dir=".//models//diffusers//",
+            local_files_only=False,
             transformer=None,
             feature_extractor=None,
             torch_dtype=torch.float16,
@@ -388,7 +388,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
         source = "Tencent-Hunyuan/" + model
         HunyuanStorage.pipe.transformer = HunyuanDiT2DModel.from_pretrained(
             source,
-            local_files_only=False, cache_dir=".//models//diffusers//",
+            local_files_only=False,
             subfolder='transformer',
             torch_dtype=torch.float16,
         )
@@ -397,7 +397,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
     ####    controlnet
     if HunyuanStorage.lastControlNet != useControlNet and useControlNet:
         HunyuanStorage.pipe.controlnet=HunyuanDiT2DControlNetModel.from_pretrained(
-            useControlNet, cache_dir=".//models//diffusers//", 
+            useControlNet,
             low_cpu_mem_usage=False, device_map=None,
             ignore_mismatched_sizes=True,
             torch_dtype=torch.float16)
@@ -724,13 +724,11 @@ def on_ui_tabs():
         if tokenizer is None:
             tokenizer = T5TokenizerFast.from_pretrained(
                 'roborovski/superprompt-v1',
-                cache_dir='.//models//diffusers//',
             )
             shared.SuperPrompt_tokenizer = tokenizer
         if superprompt is None:
             superprompt = T5ForConditionalGeneration.from_pretrained(
                 'roborovski/superprompt-v1',
-                cache_dir='.//models//diffusers//',
                 device_map='auto',
                 torch_dtype=torch.float16
             )
