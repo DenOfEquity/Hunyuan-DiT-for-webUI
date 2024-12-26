@@ -9,7 +9,6 @@ class HunyuanStorage:
     ModuleReload = False
     usingGradio4 = False
     lastSeed = -1
-    galleryIndex = 0
     lastPrompt = None
     lastNegative = None
     noiseRGBA = [0.0, 0.0, 0.0, 0.0]
@@ -134,13 +133,13 @@ def create_infotext(model, positive_prompt, negative_prompt, guidance_scale, gui
         "zSNR":             '✓' if HunyuanStorage.zeroSNR else '✗',
     }
 
-    prompt_text = f"Prompt: {positive_prompt}\n"
-    prompt_text += (f"Negative: {negative_prompt}\n")
+    prompt_text = f"{positive_prompt}\n"
+    prompt_text += (f"Negative prompt: {negative_prompt}\n")
     generation_params_text = ", ".join([k if k == v else f'{k}: {v}' for k, v in generation_params.items() if v is not None])
     
-    noise_text = f"\nInitial noise: {HunyuanStorage.noiseRGBA}" if HunyuanStorage.noiseRGBA[3] != 0.0 else ""
+    noise_text = f", Initial noise: {HunyuanStorage.noiseRGBA}" if HunyuanStorage.noiseRGBA[3] != 0.0 else ""
 
-    return f"Model: {model}\n{prompt_text}{generation_params_text}{noise_text}"
+    return f"{prompt_text}{generation_params_text}{noise_text}, Model (Hunyuan): {model}"
 
 def predict(model, positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale, guidance_cutoff,
             num_steps, sampling_seed, num_images, scheduler, style, i2iSource, i2iDenoise, maskType, maskSource, maskBlur, maskCutOff, 
@@ -659,11 +658,14 @@ def on_ui_tabs():
         loras = buildLoRAList ()
         return gradio.Dropdown.update(choices=loras)
    
-    def getGalleryIndex (evt: gradio.SelectData):
-        HunyuanStorage.galleryIndex = evt.index
+    def getGalleryIndex (index):
+        return index
 
-    def reuseLastSeed ():
-        return HunyuanStorage.lastSeed + HunyuanStorage.galleryIndex
+    def getGalleryText (gallery, index):
+        return gallery[index][1]
+
+    def reuseLastSeed (index):
+        return HunyuanStorage.lastSeed + index
         
     def i2iSetDimensions (image, w, h):
         if image is not None:
@@ -671,13 +673,13 @@ def on_ui_tabs():
             h = 32 * (image.size[1] // 32)
         return [w, h]
 
-    def i2iImageFromGallery (gallery):
+    def i2iImageFromGallery (gallery, index):
         try:
             if HunyuanStorage.usingGradio4:
-                newImage = gallery[HunyuanStorage.galleryIndex][0]
+                newImage = gallery[index][0]
                 return newImage
             else:
-                newImage = gallery[HunyuanStorage.galleryIndex][0]['name'].rsplit('?', 1)[0]
+                newImage = gallery[index][0]['name'].rsplit('?', 1)[0]
                 return newImage
         except:
             return None
@@ -964,7 +966,7 @@ def on_ui_tabs():
                                             ], label='Model', value='HunyuanDiT-v1.2-Diffusers-Distilled', type='value')
 
                     parse = ToolButton(value="↙️", variant='secondary', tooltip="parse")
-                    SP = ToolButton(value='ꌗ', variant='secondary', tooltip='zero out negative embeds')
+                    SP = ToolButton(value='ꌗ', variant='secondary', tooltip='prompt enhancement')
                     T5 = ToolButton(value="T5", variant='primary', tooltip="use T5 text encoder")
                     karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas")
                     CL = ToolButton(value='\u29BE', variant='secondary', tooltip='centre latents to mean')
@@ -978,9 +980,9 @@ def on_ui_tabs():
                     negative_prompt = gradio.Textbox(label='Negative', placeholder='', lines=1.01)
                     style = gradio.Dropdown([x[0] for x in styles.styles_list], label='Style', value="(None)", type='index', scale=0)
                 with gradio.Row():
-                    width = gradio.Slider(label='Width', minimum=768, maximum=1280, step=32, value=1024, elem_id="Hunyuan-DiT_width")
+                    width = gradio.Slider(label='Width', minimum=768, maximum=1280, step=32, value=1024)
                     swapper = ToolButton(value="\U000021C4")
-                    height = gradio.Slider(label='Height', minimum=768, maximum=1280, step=32, value=1024, elem_id="Hunyuan-DiT_height")
+                    height = gradio.Slider(label='Height', minimum=768, maximum=1280, step=32, value=1024)
                     dims = gradio.Dropdown([f'{i} \u00D7 {j}' for i,j in resolutionList],
                                         label='Quickset', type='index', scale=0)
 
@@ -1052,10 +1054,13 @@ def on_ui_tabs():
 
             with gradio.Column():
                 generate_button = gradio.Button(value="Generate", variant='primary', visible=True)
-                output_gallery = gradio.Gallery(label='Output', height="80vh", type='pil', interactive=False, 
+                output_gallery = gradio.Gallery(label='Output', height="80vh", type='pil', interactive=False, elem_id="Hunyuan_gallery", 
                                             show_label=False, visible=True, object_fit='none', columns=1, preview=True)
 #   gallery movement buttons don't work, others do
 #   caption not displaying linebreaks, alt text does
+
+                gallery_index = gradio.Number(value=0, visible=False)
+                infotext = gradio.Textbox(value="", visible=False)
 
                 with gradio.Row():
                     buttons = parameters_copypaste.create_buttons(["img2img", "inpaint", "extras"])
@@ -1063,7 +1068,7 @@ def on_ui_tabs():
                 for tabname, button in buttons.items():
                     parameters_copypaste.register_paste_params_button(parameters_copypaste.ParamBinding(
                         paste_button=button, tabname=tabname,
-                        source_text_component=positive_prompt,
+                        source_text_component=infotext,
                         source_image_component=output_gallery,
                     ))
 
@@ -1084,17 +1089,16 @@ def on_ui_tabs():
         zsnr.click(toggleZSNR, inputs=[], outputs=zsnr)
         swapper.click(lambda w, h: (h, w), inputs=[width, height], outputs=[width, height], show_progress=False)
         random.click(lambda : -1, inputs=[], outputs=sampling_seed, show_progress=False)
-        reuseSeed.click(reuseLastSeed, inputs=[], outputs=sampling_seed, show_progress=False)
+        reuseSeed.click(reuseLastSeed, inputs=gallery_index, outputs=sampling_seed, show_progress=False)
 
         i2iSetWH.click (fn=i2iSetDimensions, inputs=[i2iSource, width, height], outputs=[width, height], show_progress=False)
-        i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery], outputs=[i2iSource])
-        i2iCaption.click (fn=i2iMakeCaptions, inputs=[i2iSource, positive_prompt], outputs=[positive_prompt])#outputs=[positive_prompt]
+        i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery, gallery_index], outputs=[i2iSource])
+        i2iCaption.click (fn=i2iMakeCaptions, inputs=[i2iSource, positive_prompt], outputs=[positive_prompt])
         toPrompt.click(toggleC2P, inputs=[], outputs=[toPrompt])
 
-        output_gallery.select (fn=getGalleryIndex, inputs=[], outputs=[])
+        output_gallery.select(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index], outputs=[infotext])
 
-        generate_button.click(predict, inputs=ctrls, outputs=[generate_button, SP, output_gallery]).then(fn=lambda: gradio.update(value='Generate', variant='primary', interactive=True), inputs=None, outputs=generate_button)
-        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, lora, scale], outputs=[generate_button, SP])
+        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, lora, scale], outputs=[generate_button, SP]).then(predict, inputs=ctrls, outputs=[generate_button, SP, output_gallery]).then(fn=lambda: gradio.update(value='Generate', variant='primary', interactive=True), inputs=None, outputs=generate_button).then(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index], outputs=[infotext])
 
     return [(hunyuandit_block, "Hunyuan-DiT", "hunyuan_DoE")]
 
