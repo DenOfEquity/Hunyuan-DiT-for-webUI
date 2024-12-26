@@ -37,6 +37,9 @@ not current UI, but similar
 <details>
 <summary>Change log</summary>
 
+#### 26/12/2024 ####
+* fixes for gallery, sending to i2i
+
 #### ??/08/2024 ####
 * adjustments for Gradio4
 
