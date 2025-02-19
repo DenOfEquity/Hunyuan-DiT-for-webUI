@@ -595,6 +595,8 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
     if useControlNet != None:
         useControlNet += f" strength: {controlNetStrength}, step range: {controlNetStart}-{controlNetEnd}"
 
+    original_samples_filename_pattern = opts.samples_filename_pattern
+    opts.samples_filename_pattern = "HyDit_[datetime]"
     result = []
     total = len(output)
     for i in range (total):
@@ -624,6 +626,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
             info
         )
     print ('Hunyuan: VAE: done  ')
+    opts.samples_filename_pattern = original_samples_filename_pattern
 
 #    if not HunyuanStorage.noUnload:
 #       HunyuanStorage.pipe = None  #   contains scheduler, VAE
@@ -1072,29 +1075,29 @@ def on_ui_tabs():
                         source_image_component=output_gallery,
                     ))
 
-        noUnload.click(toggleNU, inputs=[], outputs=noUnload)
-        unloadModels.click(unloadM, inputs=[], outputs=[], show_progress=True)
-        SP.click(toggleSP, inputs=[], outputs=SP)
+        noUnload.click(toggleNU, inputs=None, outputs=noUnload)
+        unloadModels.click(unloadM, inputs=None, outputs=None, show_progress=True)
+        SP.click(toggleSP, inputs=None, outputs=SP)
         SP.click(superPrompt, inputs=[positive_prompt, sampling_seed], outputs=[SP, positive_prompt])
-        sharpNoise.click(toggleSharp, inputs=[], outputs=sharpNoise)
+        sharpNoise.click(toggleSharp, inputs=None, outputs=sharpNoise)
         maskCopy.click(fn=maskFromImage, inputs=[i2iSource], outputs=[maskSource, maskType])
 
         parse.click(parsePrompt, inputs=parseable, outputs=parseable, show_progress=False)
         dims.input(updateWH, inputs=[dims, width, height], outputs=[dims, width, height], show_progress=False)
-        refresh.click(refreshLoRAs, inputs=[], outputs=[lora])
-        karras.click(toggleKarras, inputs=[], outputs=karras)
-        T5.click(toggleT5, inputs=[], outputs=T5)
-        AS.click(toggleAS, inputs=[], outputs=AS)
-        CL.click(toggleCL, inputs=[], outputs=CL)
-        zsnr.click(toggleZSNR, inputs=[], outputs=zsnr)
+        refresh.click(refreshLoRAs, inputs=None, outputs=[lora])
+        karras.click(toggleKarras, inputs=None, outputs=karras)
+        T5.click(toggleT5, inputs=None, outputs=T5)
+        AS.click(toggleAS, inputs=None, outputs=AS)
+        CL.click(toggleCL, inputs=None, outputs=CL)
+        zsnr.click(toggleZSNR, inputs=None, outputs=zsnr)
         swapper.click(lambda w, h: (h, w), inputs=[width, height], outputs=[width, height], show_progress=False)
-        random.click(lambda : -1, inputs=[], outputs=sampling_seed, show_progress=False)
+        random.click(lambda : -1, inputs=None, outputs=sampling_seed, show_progress=False)
         reuseSeed.click(reuseLastSeed, inputs=gallery_index, outputs=sampling_seed, show_progress=False)
 
         i2iSetWH.click (fn=i2iSetDimensions, inputs=[i2iSource, width, height], outputs=[width, height], show_progress=False)
         i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery, gallery_index], outputs=[i2iSource])
         i2iCaption.click (fn=i2iMakeCaptions, inputs=[i2iSource, positive_prompt], outputs=[positive_prompt])
-        toPrompt.click(toggleC2P, inputs=[], outputs=[toPrompt])
+        toPrompt.click(toggleC2P, inputs=None, outputs=[toPrompt])
 
         output_gallery.select(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index], outputs=[infotext])
 
