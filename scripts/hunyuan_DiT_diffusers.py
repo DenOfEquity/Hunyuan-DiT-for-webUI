@@ -76,8 +76,6 @@ from diffusers.utils import logging
 from diffusers.models import HunyuanDiT2DControlNetModel#, HunyuanDiT2DMultiControlNetModel
 
 ##  for Florence-2, including workaround for unnecessary flash_attn requirement
-from unittest.mock import patch
-from transformers.dynamic_module_utils import get_imports
 from transformers import AutoProcessor, AutoModelForCausalLM 
 
 ##  my stuff
@@ -837,13 +835,6 @@ def on_ui_tabs():
             return None, resolutionList[idx][0], resolutionList[idx][1]
         return None, w, h
 
-    def fixed_get_imports(filename: str | os.PathLike) -> list[str]:
-        if not str(filename).endswith("modeling_florence2.py"):
-            return get_imports(filename)
-        imports = get_imports(filename)
-        if "flash_attn" in imports:
-            imports.remove("flash_attn")
-        return imports
     def i2iMakeCaptions (image, originalPrompt):
         if image == None:
             return originalPrompt
@@ -860,7 +851,7 @@ def on_ui_tabs():
         prompts = ['<DETAILED_CAPTION>', '<MORE_DETAILED_CAPTION>']
 
         for p in prompts:
-            inputs = processor(text=p, images=image, return_tensors="pt")
+            inputs = processor(text=p, images=image.convert("RGB"), return_tensors="pt")
             inputs.to('cuda').to(torch.float16)
             generated_ids = model.generate(
                 input_ids=inputs["input_ids"],
