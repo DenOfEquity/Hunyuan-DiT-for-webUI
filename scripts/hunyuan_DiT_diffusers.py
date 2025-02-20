@@ -7,8 +7,8 @@ check_min_version("0.30.0")
 
 class HunyuanStorage:
     ModuleReload = False
+    forgeCanvas = False
     usingGradio4 = False
-    lastSeed = -1
     lastPrompt = None
     lastNegative = None
     noiseRGBA = [0.0, 0.0, 0.0, 0.0]
@@ -25,6 +25,7 @@ class HunyuanStorage:
     transformerStateDict = None
 
     locked = False      #   for preventing changes to the following volatile state while generating
+    randomSeed = True
     noUnload = False
     karras = False
     useT5 = True
@@ -47,6 +48,14 @@ try:
     HunyuanStorage.ModuleReload = True
 except:
     HunyuanStorage.ModuleReload = False
+
+try:
+    from modules_forge.forge_canvas.canvas import ForgeCanvas, canvas_head
+    HunyuanStorage.forgeCanvas = True
+except:
+    HunyuanStorage.forgeCanvas = False
+    canvas_head = ""
+
 
 ##  from webui
 from modules import script_callbacks, images, shared
@@ -164,29 +173,54 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
     if i2iSource == None:
         maskType = 0
         i2iDenoise = 1
+    
     if maskSource == None:
         maskType = 0
-    if HunyuanStorage.i2iAllSteps == True:
-        num_steps = int(num_steps / i2iDenoise)
-        
+
     match maskType:
         case 0:     #   'none'
             maskSource = None
             maskBlur = 0
             maskCutOff = 1.0
-        case 1:     #   'image'
-            maskSource = maskSource['background'] if HunyuanStorage.usingGradio4 else maskSource['image']
-        case 2:     #   'drawn'
-            maskSource = maskSource['layers'][0] if HunyuanStorage.usingGradio4 else maskSource['mask']
-        case 3:     #   'composite'
-            maskSource = maskSource['composite'] if HunyuanStorage.usingGradio4 else maskSource['image']
+        case 1:
+            if HunyuanStorage.forgeCanvas: #  'inpaint mask'
+                maskSource = maskSource.getchannel('A').convert('L')#.convert("RGB")#.getchannel('R').convert('L')
+            else:                       #   'drawn'
+                maskSource = maskSource['layers'][0]  if HunyuanStorage.usingGradio4 else maskSource['mask']
+        case 2:
+            if HunyuanStorage.forgeCanvas: #   sketch
+                i2iSource = Image.alpha_composite(i2iSource, maskSource)
+                maskSource = None
+                maskBlur = 0
+                maskCutOff = 1.0
+            else:                       #   'image'
+                maskSource = maskSource['background'] if HunyuanStorage.usingGradio4 else maskSource['image']
+        case 3:
+            if HunyuanStorage.forgeCanvas: #   inpaint sketch
+                i2iSource = Image.alpha_composite(i2iSource, maskSource)
+                mask = maskSource.getchannel('A').convert('L')
+                short_side = min(mask.size)
+                dilation_size = int(0.015 * short_side) * 2 + 1
+                mask = mask.filter(ImageFilter.MaxFilter(dilation_size))
+                maskSource = mask.point(lambda v: 255 if v > 0 else 0)
+                maskCutoff = 0.0
+            else:                       #   'composite'
+                maskSource = maskSource['composite']  if HunyuanStorage.usingGradio4 else maskSource['image']
         case _:
             maskSource = None
             maskBlur = 0
             maskCutOff = 1.0
 
+    if i2iSource:
+        if HunyuanStorage.i2iAllSteps == True:
+            num_steps = int(num_steps / i2iDenoise)
+
+        if HunyuanStorage.forgeCanvas:
+            i2iSource = i2iSource.convert('RGB')
+
     if maskBlur > 0:
-        maskSource = TF.gaussian_blur(maskSource, 1+2*maskBlur*8)
+        dilation_size = maskBlur * 2 + 1
+        maskSource = TF.gaussian_blur(maskSource.filter(ImageFilter.MaxFilter(dilation_size)), dilation_size)
     ####    end check img2img
 
 
@@ -212,8 +246,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
     gc.collect()
     torch.cuda.empty_cache()
 
-    fixed_seed = get_fixed_seed(sampling_seed)
-    HunyuanStorage.lastSeed = fixed_seed
+    fixed_seed = get_fixed_seed(-1 if HunyuanStorage.randomSeed else sampling_seed)
 
     #first: tokenize and text_encode
     useCachedEmbeds = (HunyuanStorage.lastPrompt   == combined_positive and 
@@ -384,13 +417,27 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
     ####    transformer
     if HunyuanStorage.lastTR != model:
         print ("Hunyuan: loading transformer ...", end="\r", flush=True)
-        source = "Tencent-Hunyuan/" + model
-        HunyuanStorage.pipe.transformer = HunyuanDiT2DModel.from_pretrained(
-            source,
-            local_files_only=False,
-            subfolder='transformer',
-            torch_dtype=torch.float16,
-        )
+
+        is_v12 = False
+        if "HunyuanDiT" in model and "-Diffusers" in model:
+            source = "Tencent-Hunyuan/" + model
+            if "HunyuanDiT-v1.2-Diffusers" in model:
+                is_v12 = True
+            HunyuanStorage.pipe.transformer = HunyuanDiT2DModel.from_pretrained(
+                source,
+                local_files_only=False,
+                subfolder='transformer',
+                torch_dtype=torch.float16,
+            )
+        else:
+            source = ".//models//diffusers//HunyuanCustom//" + model
+            is_v12 = True
+            HunyuanStorage.pipe.transformer = HunyuanDiT2DModel.from_pretrained(
+                source,
+                local_files_only=True,
+                torch_dtype=torch.float16,
+            )
+
         HunyuanStorage.lastTR = model
 
     ####    controlnet
@@ -489,7 +536,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
     #   end: load LoRA
 
     schedulerConfig = dict(HunyuanStorage.pipe.scheduler.config)
-    if "HunyuanDiT-v1.2-Diffusers" in model:
+    if is_v12:
         schedulerConfig['beta_end'] = 0.018
     schedulerConfig['use_karras_sigmas'] = HunyuanStorage.karras
     if HunyuanStorage.zeroSNR:
@@ -614,6 +661,9 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
         image = HunyuanStorage.pipe.vae.decode(latent, return_dict=False)[0]
         image = HunyuanStorage.pipe.image_processor.postprocess(image, output_type='pil', do_denormalize=[True])[0]
 
+        if maskType > 0 and maskSource is not None:
+            image = Image.composite(image, i2iSource, maskSource)
+
         result.append((image, info))
         
         images.save_image(
@@ -636,7 +686,7 @@ def predict(model, positive_prompt, negative_prompt, width, height, guidance_sca
     torch.cuda.empty_cache()
 
     HunyuanStorage.locked = False
-    return gradio.Button.update(value='Generate', variant='primary', interactive=True), gradio.Button.update(interactive=True), result
+    return fixed_seed, gradio.Button.update(interactive=True), result
 
 
 def on_ui_tabs():
@@ -655,6 +705,24 @@ def on_ui_tabs():
 
         return loras
 
+    def buildModelList ():
+        models_list = ['HunyuanDiT-v1.2-Diffusers-Distilled',
+                       'HunyuanDiT-v1.2-Diffusers',
+                       'HunyuanDiT-v1.1-Diffusers-Distilled',
+                       'HunyuanDiT-v1.1-Diffusers',
+                       'HunyuanDiT-Diffusers-Distilled',
+                       'HunyuanDiT-Diffusers',
+                      ]
+        # try:
+            # custom = [name for name in os.listdir(".//models//diffusers//HunyuanCustom") if os.path.isdir(os.path.join(".//models//diffusers//HunyuanCustom", name))]
+            # models_list += custom
+        # except:
+            # pass
+
+        return models_list
+
+    models_list = buildModelList ()
+
     loras = buildLoRAList ()
 
     def refreshLoRAs ():
@@ -662,14 +730,13 @@ def on_ui_tabs():
         return gradio.Dropdown.update(choices=loras)
    
     def getGalleryIndex (index):
+        if index < 0:
+            index = 0
         return index
 
-    def getGalleryText (gallery, index):
-        return gallery[index][1]
+    def getGalleryText (gallery, index, seed):
+        return gallery[index][1], seed+index
 
-    def reuseLastSeed (index):
-        return HunyuanStorage.lastSeed + index
-        
     def i2iSetDimensions (image, w, h):
         if image is not None:
             w = 32 * (image.size[0] // 32)
@@ -693,6 +760,9 @@ def on_ui_tabs():
 
 
     #   these are volatile state, should not be changed during generation
+    def toggleRandom ():
+        HunyuanStorage.randomSeed ^= True
+        return gradio.Button.update(variant='primary' if HunyuanStorage.randomSeed == True else 'secondary')
     def toggleKarras ():
         if not HunyuanStorage.locked:
             HunyuanStorage.karras ^= True
@@ -778,11 +848,10 @@ def on_ui_tabs():
         if image == None:
             return originalPrompt
 
-        with patch("transformers.dynamic_module_utils.get_imports", fixed_get_imports): #workaround for unnecessary flash_attn requirement
-            model = AutoModelForCausalLM.from_pretrained('microsoft/Florence-2-base', 
-                                                         attn_implementation="sdpa", 
-                                                         torch_dtype=torch.float16, 
-                                                         trust_remote_code=True).to('cuda')
+        model = AutoModelForCausalLM.from_pretrained('microsoft/Florence-2-base', 
+                                                     attn_implementation="sdpa", 
+                                                     torch_dtype=torch.float16, 
+                                                     trust_remote_code=True).to('cuda')
         processor = AutoProcessor.from_pretrained('microsoft/Florence-2-base', #-large
                                                   torch_dtype=torch.float32, 
                                                   trust_remote_code=True)
@@ -956,32 +1025,26 @@ def on_ui_tabs():
         else:
             gradio.Info('Unable to unload models while using them.')
 
-    with gradio.Blocks() as hunyuandit_block:
+    with gradio.Blocks(analytics_enabled=False, head=canvas_head) as hunyuandit_block:
         with ResizeHandleRow():
             with gradio.Column():
                 with gradio.Row():
-                    model = gradio.Dropdown(['HunyuanDiT-v1.2-Diffusers-Distilled',
-                                             'HunyuanDiT-v1.2-Diffusers',
-                                             'HunyuanDiT-v1.1-Diffusers-Distilled',
-                                             'HunyuanDiT-v1.1-Diffusers',
-                                             'HunyuanDiT-Diffusers-Distilled',
-                                             'HunyuanDiT-Diffusers',
-                                            ], label='Model', value='HunyuanDiT-v1.2-Diffusers-Distilled', type='value')
+                    model = gradio.Dropdown(models_list, label='Model', value='HunyuanDiT-v1.2-Diffusers-Distilled', type='value')
 
                     parse = ToolButton(value="↙️", variant='secondary', tooltip="parse")
                     SP = ToolButton(value='ꌗ', variant='secondary', tooltip='prompt enhancement')
                     T5 = ToolButton(value="T5", variant='primary', tooltip="use T5 text encoder")
-                    karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas")
                     CL = ToolButton(value='\u29BE', variant='secondary', tooltip='centre latents to mean')
                     zsnr = ToolButton(value='zsnr', variant='secondary', tooltip='zero SNR')
+                    karras = ToolButton(value="\U0001D542", variant='secondary', tooltip="use Karras sigmas")
+                    scheduler = gradio.Dropdown(schedulerList, label='Sampler', value="SA-solver", type='value', scale=0)
                 with gradio.Row():
-                    positive_prompt = gradio.Textbox(label='Prompt', placeholder='Enter a prompt here...', lines=1.01)
-                    scheduler = gradio.Dropdown(schedulerList,
-                        label='Sampler', value="SA-solver", type='value', scale=0)
+                    positive_prompt = gradio.Textbox(label='Prompt', placeholder='Enter a prompt here...', lines=1)
+                    style = gradio.Dropdown([x[0] for x in styles.styles_list], label='Style', value="(None)", type='index', scale=0)
 
                 with gradio.Row():
-                    negative_prompt = gradio.Textbox(label='Negative', placeholder='', lines=1.01)
-                    style = gradio.Dropdown([x[0] for x in styles.styles_list], label='Style', value="(None)", type='index', scale=0)
+                    negative_prompt = gradio.Textbox(label='Negative', placeholder='', lines=1)
+                    batch_size = gradio.Number(label='Batch Size', minimum=1, maximum=9, value=1, precision=0, scale=0)
                 with gradio.Row():
                     width = gradio.Slider(label='Width', minimum=768, maximum=1280, step=32, value=1024)
                     swapper = ToolButton(value="\U000021C4")
@@ -995,10 +1058,8 @@ def on_ui_tabs():
                     CFGcutoff = gradio.Slider(label='CFG cutoff after step', minimum=0.00, maximum=1.0, step=0.01, value=1.0, scale=1)
                 with gradio.Row():
                     steps = gradio.Slider(label='Steps', minimum=1, maximum=80, step=1, value=20, scale=2)
+                    random = ToolButton(value="\U0001f3b2\ufe0f", variant="primary")
                     sampling_seed = gradio.Number(label='Seed', value=-1, precision=0, scale=0)
-                    random = ToolButton(value="\U0001f3b2\ufe0f")
-                    reuseSeed = ToolButton(value="\u267b\ufe0f")
-                    batch_size = gradio.Number(label='Batch Size', minimum=1, maximum=9, value=1, precision=0, scale=0)
 
                 with gradio.Row(equal_height=True):
                     lora = gradio.Dropdown([x for x in loras], label='LoRA (place in models/diffusers/HunyuanLora)', value="(None)", type='value', multiselect=False, scale=1)
@@ -1023,35 +1084,55 @@ def on_ui_tabs():
                             CNEnd = gradio.Slider(label='End step', minimum=0.00, maximum=1.0, step=0.01, value=0.8)
 
                 with gradio.Accordion(label='image to image', open=False):
-                    with gradio.Row():
-                        i2iSource = gradio.Image(label='image to image source', sources=['upload'], type='pil', interactive=True, show_download_button=False)
-                        if HunyuanStorage.usingGradio4:
-                            maskSource = gradio.ImageMask(label='mask source', sources=['upload'], type='pil', interactive=True, show_download_button=False, layers=False, brush=gradio.Brush(colors=["#F0F0F0"], default_color="#F0F0F0", color_mode='fixed'))
-                        else:
-                            maskSource = gradio.Image(label='mask source', sources=['upload'], type='pil', interactive=True, show_download_button=False, tool='sketch', image_mode='RGB', brush_color='#F0F0F0')#opts.img2img_inpaint_mask_brush_color)
-                    with gradio.Row():
-                        with gradio.Column():
-                            with gradio.Row():
-                                i2iDenoise = gradio.Slider(label='Denoise', minimum=0.00, maximum=1.0, step=0.01, value=0.5)
-                                AS = ToolButton(value='AS')
-                            with gradio.Row():
-                                i2iFromGallery = gradio.Button(value='Get gallery image')
-                                i2iSetWH = gradio.Button(value='Set size from image')
-                            with gradio.Row():
-                                i2iCaption = gradio.Button(value='Caption image (Florence-2)', scale=6)
-                                toPrompt = ToolButton(value='P', variant='secondary')
-
-                        with gradio.Column():
-                            maskType = gradio.Dropdown(['none', 'image', 'drawn', 'composite'], value='none', label='Mask', type='index')
-                            maskBlur = gradio.Slider(label='Blur mask radius', minimum=0, maximum=25, step=1, value=0)
+                    if HunyuanStorage.forgeCanvas:
+                        i2iSource = ForgeCanvas(elem_id="Hunyuan_img2img_image", height=320, scribble_color=opts.img2img_inpaint_mask_brush_color, scribble_color_fixed=False, scribble_alpha=100, scribble_alpha_fixed=False, scribble_softness_fixed=False)
+                        with gradio.Row():
+                            i2iFromGallery = gradio.Button(value='Get gallery image')
+                            i2iSetWH = gradio.Button(value='Set size from image')
+                            i2iCaption = gradio.Button(value='Caption image')
+                            toPrompt = ToolButton(value='P', variant='secondary')
+                        
+                        with gradio.Row():
+                            i2iDenoise = gradio.Slider(label='Denoise', minimum=0.00, maximum=1.0, step=0.01, value=0.5)
+                            AS = ToolButton(value='AS')
+                            maskType = gradio.Dropdown(['i2i', 'inpaint mask', 'sketch', 'inpaint sketch'], value='i2i', label='Type', type='index')
+                        with gradio.Row():
+                            maskBlur = gradio.Slider(label='Blur mask radius', minimum=0, maximum=64, step=1, value=0)
                             maskCut = gradio.Slider(label='Ignore Mask after step', minimum=0.00, maximum=1.0, step=0.01, value=1.0)
-                            maskCopy = gradio.Button(value='use i2i source as template')
+                 
+                    else:
+                        with gradio.Row():
+                            i2iSource = gradio.Image(label='image to image source', sources=['upload'], type='pil', interactive=True, show_download_button=False)
+                            if HunyuanStorage.usingGradio4:
+                                maskSource = gradio.ImageEditor(label='mask source', sources=['upload'], type='pil', interactive=True, show_download_button=False, layers=False, brush=gradio.Brush(colors=['#FFFFFF'], color_mode='fixed'))
+                            else:
+                                maskSource = gradio.Image(label='mask source', sources=['upload'], type='pil', interactive=True, show_download_button=False, tool='sketch', image_mode='RGB', brush_color='#F0F0F0')#opts.img2img_inpaint_mask_brush_color)
+                        with gradio.Row():
+                            with gradio.Column():
+                                with gradio.Row():
+                                    i2iDenoise = gradio.Slider(label='Denoise', minimum=0.00, maximum=1.0, step=0.01, value=0.5)
+                                    AS = ToolButton(value='AS')
+                                with gradio.Row():
+                                    i2iFromGallery = gradio.Button(value='Get gallery image')
+                                    i2iSetWH = gradio.Button(value='Set size from image')
+                                with gradio.Row():
+                                    i2iCaption = gradio.Button(value='Caption image (Florence-2)', scale=6)
+                                    toPrompt = ToolButton(value='P', variant='secondary')
+
+                            with gradio.Column():
+                                maskType = gradio.Dropdown(['none', 'drawn', 'image', 'composite'], value='none', label='Mask', type='index')
+                                maskBlur = gradio.Slider(label='Blur mask radius', minimum=0, maximum=25, step=1, value=0)
+                                maskCut = gradio.Slider(label='Ignore Mask after step', minimum=0.00, maximum=1.0, step=0.01, value=1.0)
+                                maskCopy = gradio.Button(value='use i2i source as template')
 
                 with gradio.Row():
                     noUnload = gradio.Button(value='keep models loaded', variant='primary' if HunyuanStorage.noUnload else 'secondary', tooltip='noUnload', scale=1)
                     unloadModels = gradio.Button(value='unload models', tooltip='force unload of models', scale=1)
 
-                ctrls = [model, positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale, CFGcutoff, steps, sampling_seed, batch_size, scheduler, style, i2iSource, i2iDenoise, maskType, maskSource, maskBlur, maskCut, CNMethod, CNSource, CNStrength, CNStart, CNEnd]
+                if HunyuanStorage.forgeCanvas:
+                    ctrls = [model, positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale, CFGcutoff, steps, sampling_seed, batch_size, scheduler, style, i2iSource.background, i2iDenoise, maskType, i2iSource.foreground, maskBlur, maskCut, CNMethod, CNSource, CNStrength, CNStart, CNEnd]
+                else:
+                    ctrls = [model, positive_prompt, negative_prompt, width, height, guidance_scale, guidance_rescale, CFGcutoff, steps, sampling_seed, batch_size, scheduler, style, i2iSource, i2iDenoise, maskType, maskSource, maskBlur, maskCut, CNMethod, CNSource, CNStrength, CNStart, CNEnd]
 
                 parseable = [positive_prompt, negative_prompt, width, height, sampling_seed, scheduler, steps, guidance_scale, guidance_rescale, CFGcutoff, initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, lora, scale]
 
@@ -1059,11 +1140,12 @@ def on_ui_tabs():
                 generate_button = gradio.Button(value="Generate", variant='primary', visible=True)
                 output_gallery = gradio.Gallery(label='Output', height="80vh", type='pil', interactive=False, elem_id="Hunyuan_gallery", 
                                             show_label=False, visible=True, object_fit='none', columns=1, preview=True)
-#   gallery movement buttons don't work, others do
+
 #   caption not displaying linebreaks, alt text does
 
                 gallery_index = gradio.Number(value=0, visible=False)
                 infotext = gradio.Textbox(value="", visible=False)
+                base_seed = gradio.Number(value=0, visible=False)
 
                 with gradio.Row():
                     buttons = parameters_copypaste.create_buttons(["img2img", "inpaint", "extras"])
@@ -1075,12 +1157,21 @@ def on_ui_tabs():
                         source_image_component=output_gallery,
                     ))
 
+        if HunyuanStorage.forgeCanvas:
+            i2iSetWH.click (fn=i2iSetDimensions, inputs=[i2iSource.background, width, height], outputs=[width, height], show_progress=False)
+            i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery, gallery_index], outputs=[i2iSource.background])
+            i2iCaption.click (fn=i2iMakeCaptions, inputs=[i2iSource.background, positive_prompt], outputs=[positive_prompt])
+        else:
+            maskCopy.click(fn=maskFromImage, inputs=[i2iSource], outputs=[maskSource, maskType])
+            i2iSetWH.click (fn=i2iSetDimensions, inputs=[i2iSource, width, height], outputs=[width, height], show_progress=False)
+            i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery, gallery_index], outputs=[i2iSource])
+            i2iCaption.click (fn=i2iMakeCaptions, inputs=[i2iSource, positive_prompt], outputs=[positive_prompt])
+
         noUnload.click(toggleNU, inputs=None, outputs=noUnload)
         unloadModels.click(unloadM, inputs=None, outputs=None, show_progress=True)
         SP.click(toggleSP, inputs=None, outputs=SP)
         SP.click(superPrompt, inputs=[positive_prompt, sampling_seed], outputs=[SP, positive_prompt])
         sharpNoise.click(toggleSharp, inputs=None, outputs=sharpNoise)
-        maskCopy.click(fn=maskFromImage, inputs=[i2iSource], outputs=[maskSource, maskType])
 
         parse.click(parsePrompt, inputs=parseable, outputs=parseable, show_progress=False)
         dims.input(updateWH, inputs=[dims, width, height], outputs=[dims, width, height], show_progress=False)
@@ -1091,17 +1182,13 @@ def on_ui_tabs():
         CL.click(toggleCL, inputs=None, outputs=CL)
         zsnr.click(toggleZSNR, inputs=None, outputs=zsnr)
         swapper.click(lambda w, h: (h, w), inputs=[width, height], outputs=[width, height], show_progress=False)
-        random.click(lambda : -1, inputs=None, outputs=sampling_seed, show_progress=False)
-        reuseSeed.click(reuseLastSeed, inputs=gallery_index, outputs=sampling_seed, show_progress=False)
+        random.click(toggleRandom, inputs=None, outputs=random, show_progress=False)
 
-        i2iSetWH.click (fn=i2iSetDimensions, inputs=[i2iSource, width, height], outputs=[width, height], show_progress=False)
-        i2iFromGallery.click (fn=i2iImageFromGallery, inputs=[output_gallery, gallery_index], outputs=[i2iSource])
-        i2iCaption.click (fn=i2iMakeCaptions, inputs=[i2iSource, positive_prompt], outputs=[positive_prompt])
         toPrompt.click(toggleC2P, inputs=None, outputs=[toPrompt])
 
-        output_gallery.select(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index], outputs=[infotext])
+        output_gallery.select(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index, base_seed], outputs=[infotext, sampling_seed])
 
-        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, lora, scale], outputs=[generate_button, SP]).then(predict, inputs=ctrls, outputs=[generate_button, SP, output_gallery]).then(fn=lambda: gradio.update(value='Generate', variant='primary', interactive=True), inputs=None, outputs=generate_button).then(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index], outputs=[infotext])
+        generate_button.click(toggleGenerate, inputs=[initialNoiseR, initialNoiseG, initialNoiseB, initialNoiseA, lora, scale], outputs=[generate_button, SP]).then(predict, inputs=ctrls, outputs=[base_seed, SP, output_gallery]).then(fn=lambda: gradio.update(value='Generate', variant='primary', interactive=True), inputs=None, outputs=generate_button).then(fn=getGalleryIndex, js="selected_gallery_index", inputs=gallery_index, outputs=gallery_index).then(fn=getGalleryText, inputs=[output_gallery, gallery_index, base_seed], outputs=[infotext, sampling_seed])
 
     return [(hunyuandit_block, "Hunyuan-DiT", "hunyuan_DoE")]
 
